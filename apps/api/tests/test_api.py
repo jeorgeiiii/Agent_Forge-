@@ -244,6 +244,8 @@ def test_events_are_ingested_once_priced_and_streamed_with_resume(client):
     assert client.get(f"/graphs/{gid}/runs/{run['id']}/status").json()["usage"]["cost_usd"] == 0.003
 
     with client.stream("GET", f"/graphs/{gid}/runs/{run['id']}/events/stream") as response:
+        # no-transform stops proxies/compressors (e.g. the Next.js /api proxy's gzip) from buffering the stream
+        assert "no-transform" in response.headers["cache-control"]
         body = "".join(response.iter_text())
     ids = [int(line[4:]) for line in body.splitlines() if line.startswith("id: ")]
     assert len(ids) == 5 and "event: llm.call" in body and body.rstrip().endswith('data: {"status": "success"}')

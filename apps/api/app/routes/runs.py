@@ -129,7 +129,7 @@ def stream_run_events(graph_id: int, run_id: int, request: Request, after: int =
     return StreamingResponse(
         _event_stream(run.id, resume_from, request),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        headers={"Cache-Control": "no-cache, no-transform", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )
 
 

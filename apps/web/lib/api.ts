@@ -225,3 +225,70 @@ export const validateNodeConfig = (type: string, config: Record<string, unknown>
   });
 export const listCredentials = (workspaceId?: number | null) =>
   request<CredentialSummary[]>(workspaceId ? `/credentials?workspace_id=${workspaceId}` : "/credentials");
+
+// ------------------------------------------------------------------ runs (inspector)
+
+export type RunSummary = {
+  id: number; graph_id: number; workflow_id: string; status: string; input: Record<string, unknown>;
+  created_at: string; trigger_kind: string; output: unknown; error: string | null; finished_at: string | null;
+  retry_of_run_id: number | null; graph_version: number | null;
+};
+
+export type RunNodeDetail = {
+  node_id: string; status: string; error: string | null; started_at: string | null; finished_at: string | null;
+  duration_ms: number | null; output: unknown; agent: { steps: unknown[]; usage: Record<string, number> } | null;
+};
+
+export type CostBucket = { calls: number; input_tokens: number; output_tokens: number; cost_usd: number | null };
+
+export type RunDetails = {
+  run: {
+    id: number; graph_id: number; graph_version: number | null; status: string; trigger: string;
+    input: unknown; output: unknown; error: string | null; created_at: string; finished_at: string | null;
+    duration_ms: number | null; retry_of_run_id: number | null;
+    waiting_for: { node_id: string; message: string } | null;
+  };
+  nodes: RunNodeDetail[];
+  usage: Record<string, number | null>;
+  cost: {
+    total_cost_usd: number | null; input_tokens: number; output_tokens: number; llm_calls: number;
+    by_model: Record<string, CostBucket>; by_agent: Record<string, CostBucket>; unpriced_models: string[];
+  };
+  event_counts: Record<string, number>;
+  last_event_id: number;
+  can_retry: boolean;
+};
+
+export type RunEvent = {
+  id: number; source: string; seq: number; type: string; node_id: string | null; at: string | null;
+  data: Record<string, unknown>;
+};
+
+/** Run history page; `nextCursor` comes from the X-Next-Cursor header. */
+export async function listRunsPage(graphId: number, opts: { status?: string; beforeId?: number | null; limit?: number } = {}) {
+  const params = new URLSearchParams({ limit: String(opts.limit ?? 25) });
+  if (opts.status) params.set("status", opts.status);
+  if (opts.beforeId) params.set("before_id", String(opts.beforeId));
+  const response = await fetch(`/api/graphs/${graphId}/runs?${params}`, { credentials: "include", cache: "no-store" });
+  if (!response.ok) {
+    const body = await response.json().catch(() => undefined);
+    throw new ApiError(body?.detail ?? `Could not load runs (${response.status}).`, response.status);
+  }
+  const cursor = response.headers.get("x-next-cursor");
+  return { runs: (await response.json()) as RunSummary[], nextCursor: cursor ? Number(cursor) : null };
+}
+
+export const getRunDetails = (graphId: number, runId: number) => request<RunDetails>(`/graphs/${graphId}/runs/${runId}/details`);
+export const getRunEvents = (graphId: number, runId: number, after = 0) =>
+  request<RunEvent[]>(`/graphs/${graphId}/runs/${runId}/events?after=${after}&limit=1000`);
+export const cancelRun = (graphId: number, runId: number) =>
+  request<RunSummary>(`/graphs/${graphId}/runs/${runId}/cancel`, { method: "POST" });
+export const retryRun = (graphId: number, runId: number) =>
+  request<RunSummary>(`/graphs/${graphId}/runs/${runId}/retry`, { method: "POST" });
+export const decideApproval = (graphId: number, runId: number, nodeId: string, approved: boolean, comment = "") =>
+  request<RunSummary>(`/graphs/${graphId}/runs/${runId}/approval`, {
+    method: "POST",
+    body: JSON.stringify({ node_id: nodeId, approved, comment }),
+  });
+/** Same-origin URL for EventSource (the Next proxy forwards it; the session cookie goes with it). */
+export const runEventsStreamUrl = (graphId: number, runId: number) => `/api/graphs/${graphId}/runs/${runId}/events/stream`;

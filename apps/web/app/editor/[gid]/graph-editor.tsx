@@ -16,12 +16,15 @@ import {
   type Node,
   type NodeProps,
 } from "@xyflow/react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 import {
   getGraph,
   listCredentials,
   listNodeTypes,
+  startRun,
   updateGraph,
   validateNodeConfig,
   type CredentialSummary,
@@ -156,6 +159,7 @@ function GraphEditorCanvas({
   const [notice, setNotice] = useState<{ text: string; kind: "ok" | "error" | "info" } | null>(null);
   const [ready, setReady] = useState(false);
   const [saving, setSaving] = useState(false);
+  const router = useRouter();
 
   // --- load node types + graph + the graph's workspace credentials
   useEffect(() => {
@@ -264,7 +268,7 @@ function GraphEditorCanvas({
     }
   }
 
-  async function saveGraph() {
+  async function saveGraph(): Promise<boolean> {
     setSaving(true);
     setNotice({ text: "Saving…", kind: "info" });
     try {
@@ -275,11 +279,34 @@ function GraphEditorCanvas({
         definition: { ...definition, positions },
       });
       setNotice({ text: `Saved (version ${(saved as { version?: number }).version ?? "?"}).`, kind: "ok" });
+      return true;
     } catch (error) {
       // 422 = the compiler's message (e.g. "Node 'check': condition is required"); 403 = no edit rights
       setNotice({ text: error instanceof Error ? error.message : "Could not save.", kind: "error" });
+      return false;
     } finally {
       setSaving(false);
+    }
+  }
+
+  /** Runs use the SAVED graph, so save first; then start and open the run inspector. */
+  async function runGraph() {
+    const text = window.prompt("Run input (JSON)", "{}");
+    if (text === null) return;
+    let input: Record<string, unknown>;
+    try {
+      input = JSON.parse(text || "{}");
+      if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error();
+    } catch {
+      setNotice({ text: "Run input must be a JSON object, e.g. {\"name\": \"Ada\"}.", kind: "error" });
+      return;
+    }
+    if (!(await saveGraph())) return;
+    try {
+      const run = await startRun(Number(graphId), input);
+      router.push(`/graphs/${graphId}/runs/${run.id}`);
+    } catch (error) {
+      setNotice({ text: error instanceof Error ? error.message : "Could not start the run.", kind: "error" });
     }
   }
 
@@ -318,6 +345,10 @@ function GraphEditorCanvas({
             <button type="button" className="ge-primary" onClick={() => void saveGraph()} disabled={!ready || saving}>
               {saving ? "Saving…" : "Save workflow"}
             </button>
+            <div className="ge-run-row">
+              <button type="button" className="ge-secondary" onClick={() => void runGraph()} disabled={!ready || saving}>▶ Run</button>
+              <Link className="ge-secondary" href={`/graphs/${graphId}/runs`}>Run history</Link>
+            </div>
             {notice && <p role="status" className={`ge-notice ge-${notice.kind}`}>{notice.text}</p>}
           </div>
         </aside>

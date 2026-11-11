@@ -31,7 +31,7 @@ async def copilot_stream(payload: CopilotRequest):
     return StreamingResponse(
         copilot.stream_suggest_graph(payload.prompt, payload.graph),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        headers={"Cache-Control": "no-cache, no-transform", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )
 
 
