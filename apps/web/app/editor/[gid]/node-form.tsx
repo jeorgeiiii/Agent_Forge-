@@ -2,17 +2,11 @@
 
 import { useEffect, useState } from "react";
 import type { CredentialSummary, JsonSchema } from "@/lib/api";
+import { FIELD_HELP } from "@/lib/help";
 
 type Config = Record<string, unknown>;
 
 const LONG_TEXT = new Set(["prompt", "system", "template", "body", "message"]);
-const HELP: Record<string, string> = {
-  prompt: "Supports expressions like {{ $json.field }} or {{ $node[\"Label\"].json.text }}.",
-  condition: 'An expression, e.g. {{ $json.total > 100 }}',
-  body_file: 'A file reference, e.g. {{ $json.file }}',
-  session_id: "Default {{ $trigger.session_id }} (sent by the chat trigger).",
-  tools: "List of tools. Each: {\"name\", \"description\", \"parameters\"?, \"node\": {\"type\", \"config\"}}.",
-};
 
 function pretty(value: unknown): string {
   return value === undefined ? "" : JSON.stringify(value, null, 2);
@@ -72,7 +66,7 @@ function Field({
       {required && <span className="nf-required" title="required"> *</span>}
     </label>
   );
-  const help = HELP[name] && <small className="nf-help">{HELP[name]}</small>;
+  const help = FIELD_HELP[name] && <small className="nf-help">{FIELD_HELP[name]}</small>;
 
   if (name === "credential_id") {
     return (
@@ -83,6 +77,7 @@ function Field({
           <option value="">- choose a credential -</option>
           {credentials.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.type})</option>)}
         </select>
+        {help}
         {credentials.length === 0 && <small className="nf-help">No credentials in this workspace yet.</small>}
       </div>
     );
@@ -96,6 +91,7 @@ function Field({
           <option value="">- default -</option>
           {schema.enum.map((option) => <option key={String(option)} value={String(option)}>{String(option)}</option>)}
         </select>
+        {help}
       </div>
     );
   }
@@ -104,6 +100,7 @@ function Field({
       <div className="nf-field nf-check">
         <input id={id} type="checkbox" checked={value === true} onChange={(e) => onChange(e.target.checked || undefined)} />
         {label}
+        {help && <span className="nf-check-help">{help}</span>}
       </div>
     );
   }
@@ -114,6 +111,7 @@ function Field({
         <input id={id} className="nf-input" type="number" step={schema.type === "integer" ? 1 : "any"}
                min={schema.minimum} max={schema.maximum} value={value === undefined ? "" : String(value)}
                onChange={(e) => onChange(e.target.value === "" ? undefined : Number(e.target.value))} />
+        {help}
       </div>
     );
   }
@@ -122,6 +120,7 @@ function Field({
     return (
       <fieldset className="nf-fieldset">
         <legend className="nf-label">{name.replace(/_/g, " ")}</legend>
+        {help}
         {Object.entries(schema.properties).map(([key, sub]) => (
           <Field key={key} name={key} schema={sub} required={!!schema.required?.includes(key)} value={nested[key]}
                  credentials={credentials}

@@ -39,8 +39,8 @@ export default function Page({ params }: { params: Promise<{ gid: string }> }) {
       <header
         style={{
           height: 52,
-          background: "#fff",
-          borderBottom: "1px solid #e2e8f0",
+          background: "#1c1f2a",
+          borderBottom: "1px solid #2f3446",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
@@ -49,16 +49,16 @@ export default function Page({ params }: { params: Promise<{ gid: string }> }) {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <a href="/" style={{ textDecoration: "none", color: "#64748b", fontSize: 13, fontWeight: 500 }}>
+          <a href="/" style={{ textDecoration: "none", color: "#9aa3b5", fontSize: 13, fontWeight: 500 }}>
             ← Agents
           </a>
-          <span style={{ color: "#cbd5e1" }}>|</span>
-          <span style={{ fontWeight: 600, fontSize: 15, color: "#0f172a" }}>AgentForge Studio</span>
-          <span style={{ fontSize: 12, background: "#f1f5f9", padding: "2px 8px", borderRadius: 4, color: "#64748b" }}>
+          <span style={{ color: "#3a4052" }}>|</span>
+          <span style={{ fontWeight: 600, fontSize: 15, color: "#e5e7eb" }}>AgentForge Studio</span>
+          <span style={{ fontSize: 12, background: "#232736", padding: "2px 8px", borderRadius: 4, color: "#9aa3b5" }}>
             ID: {gid}
           </span>
           {lastAction && (
-            <span style={{ fontSize: 12, background: "#ecfdf5", color: "#059669", padding: "2px 8px", borderRadius: 4, fontWeight: 500 }}>
+            <span style={{ fontSize: 12, background: "rgba(16, 185, 129, 0.14)", color: "#34d399", padding: "2px 8px", borderRadius: 4, fontWeight: 500 }}>
               ✨ {lastAction}
             </span>
           )}
@@ -69,9 +69,9 @@ export default function Page({ params }: { params: Promise<{ gid: string }> }) {
             style={{
               padding: "6px 12px",
               borderRadius: 6,
-              border: "1px solid #cbd5e1",
-              background: tab === "canvas" ? "#0f172a" : "#fff",
-              color: tab === "canvas" ? "#fff" : "#0f172a",
+              border: "1px solid #3a4052",
+              background: tab === "canvas" ? "#4f46e5" : "#232736",
+              color: tab === "canvas" ? "#fff" : "#cbd5e1",
               cursor: "pointer",
               fontSize: 13,
               fontWeight: 500,
@@ -84,9 +84,9 @@ export default function Page({ params }: { params: Promise<{ gid: string }> }) {
             style={{
               padding: "6px 12px",
               borderRadius: 6,
-              border: "1px solid #cbd5e1",
-              background: tab === "split" ? "#0f172a" : "#fff",
-              color: tab === "split" ? "#fff" : "#0f172a",
+              border: "1px solid #3a4052",
+              background: tab === "split" ? "#4f46e5" : "#232736",
+              color: tab === "split" ? "#fff" : "#cbd5e1",
               cursor: "pointer",
               fontSize: 13,
               fontWeight: 500,
@@ -99,9 +99,9 @@ export default function Page({ params }: { params: Promise<{ gid: string }> }) {
             style={{
               padding: "6px 12px",
               borderRadius: 6,
-              border: "1px solid #cbd5e1",
-              background: tab === "chat" ? "#0f172a" : "#fff",
-              color: tab === "chat" ? "#fff" : "#0f172a",
+              border: "1px solid #3a4052",
+              background: tab === "chat" ? "#4f46e5" : "#232736",
+              color: tab === "chat" ? "#fff" : "#cbd5e1",
               cursor: "pointer",
               fontSize: 13,
               fontWeight: 500,
@@ -129,7 +129,7 @@ export default function Page({ params }: { params: Promise<{ gid: string }> }) {
               width: tab === "split" ? "460px" : "100%",
               minWidth: tab === "split" ? 360 : 0,
               height: "100%",
-              borderLeft: tab === "split" ? "1px solid #e2e8f0" : "none",
+              borderLeft: tab === "split" ? "1px solid #2f3446" : "none",
               display: "flex",
               flexDirection: "column",
             }}
@@ -358,12 +358,12 @@ function ChatUI({
   ];
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "#f8fafc", fontFamily: "system-ui, sans-serif" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "#16181f", fontFamily: "system-ui, sans-serif" }}>
       
       {/* Header */}
-      <header style={{ height: 56, background: "#fff", borderBottom: "1px solid #e2e8f0", display: "flex", alignItems: "center", padding: "0 20px", justifyContent: "space-between" }}>
+      <header style={{ height: 56, background: "#1c1f2a", borderBottom: "1px solid #2f3446", display: "flex", alignItems: "center", padding: "0 20px", justifyContent: "space-between" }}>
         <div style={{ fontWeight: 600, fontSize: 16 }}>AgentForge Copilot</div>
-        <div style={{ color: "#64748b", fontSize: 13 }}>Session: {gid}</div>
+        <div style={{ color: "#9aa3b5", fontSize: 13 }}>Session: {gid}</div>
       </header>
 
       {/* Chat History */}
@@ -373,12 +373,12 @@ function ChatUI({
           {messages.map((m, i) => (
             <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
               <div style={{
-                background: m.role === "user" ? "#0f172a" : "#fff",
-                color: m.role === "user" ? "#fff" : "#0f172a",
+                background: m.role === "user" ? "#4f46e5" : "#232736",
+                color: m.role === "user" ? "#fff" : "#e5e7eb",
                 padding: "12px 16px",
                 borderRadius: 12,
                 maxWidth: "85%",
-                border: m.role === "assistant" ? "1px solid #e2e8f0" : "none",
+                border: m.role === "assistant" ? "1px solid #2f3446" : "none",
                 boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
                 lineHeight: 1.5,
                 fontSize: 14,
@@ -390,15 +390,15 @@ function ChatUI({
                     <span style={{ display: "inline-block", width: 6, height: 14, background: "#4f46e5", marginLeft: 4, verticalAlign: "middle" }} />
                   )}
                   {!m.content && loading && i === messages.length - 1 && (
-                    <span style={{ color: "#94a3b8", fontStyle: "italic" }}>Thinking...</span>
+                    <span style={{ color: "#7c859a", fontStyle: "italic" }}>Thinking...</span>
                   )}
                 </div>
                 
                 {/* Render the Agent Graph visually if it exists */}
                 {m.graph && (
-                  <div style={{ marginTop: 16, padding: 16, background: "#f8fafc", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                  <div style={{ marginTop: 16, padding: 16, background: "#232736", borderRadius: 8, border: "1px solid #2f3446" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.5 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "#9aa3b5", textTransform: "uppercase", letterSpacing: 0.5 }}>
                         Generated Workflow
                       </div>
                       <button
@@ -423,19 +423,19 @@ function ChatUI({
                       {m.graph.nodes.map((node, idx) => (
                         <div key={node.id} style={{ 
                           display: "flex", alignItems: "center", gap: 12, 
-                          background: "#fff", padding: "10px 12px", borderRadius: 6, 
+                          background: "#1c1f2a", padding: "10px 12px", borderRadius: 6, 
                           borderLeft: `4px solid ${
                             node.type === "llm" ? "#6366f1" : 
                             node.type === "tool" ? "#0891b2" : 
                             node.type === "condition" ? "#d97706" : "#059669"
                           }` 
                         }}>
-                          <div style={{ fontWeight: 600, fontSize: 13, width: 100, color: "#475569" }}>
+                          <div style={{ fontWeight: 600, fontSize: 13, width: 100, color: "#cbd5e1" }}>
                             {node.type.toUpperCase()}
                           </div>
                           <div style={{ fontSize: 14, flex: 1 }}>{node.label}</div>
                           {idx < m.graph!.nodes.length - 1 && (
-                             <div style={{ color: "#94a3b8", fontSize: 16 }}>↓</div>
+                             <div style={{ color: "#7c859a", fontSize: 16 }}>↓</div>
                           )}
                         </div>
                       ))}
@@ -448,19 +448,19 @@ function ChatUI({
 
           {loading && (
             <div style={{ display: "flex", justifyContent: "flex-start" }}>
-              <div style={{ background: "#fff", padding: "12px 16px", borderRadius: 12, border: "1px solid #e2e8f0", color: "#64748b", fontSize: 14 }}>
+              <div style={{ background: "#1c1f2a", padding: "12px 16px", borderRadius: 12, border: "1px solid #2f3446", color: "#9aa3b5", fontSize: 14 }}>
                 Designing workflow...
               </div>
             </div>
           )}
           
-          {msg && <div style={{ color: "#dc2626", fontSize: 13, textAlign: "center" }}>{msg}</div>}
+          {msg && <div style={{ color: "#f87171", fontSize: 13, textAlign: "center" }}>{msg}</div>}
           <div ref={bottomRef} />
         </div>
       </div>
 
       {/* Input Area with Quick Canvas Prompts */}
-      <div style={{ borderTop: "1px solid #e2e8f0", background: "#fff", padding: "12px 16px" }}>
+      <div style={{ borderTop: "1px solid #2f3446", background: "#1c1f2a", padding: "12px 16px" }}>
         {/* Quick prompt buttons for canvas manipulation */}
         <div style={{ display: "flex", gap: 6, marginBottom: 10, overflowX: "auto", paddingBottom: 2 }}>
           {quickPrompts.map((qp, idx) => (
@@ -470,12 +470,12 @@ function ChatUI({
               disabled={loading}
               onClick={() => handleSendPrompt(qp)}
               style={{
-                background: "#f1f5f9",
-                border: "1px solid #e2e8f0",
+                background: "#232736",
+                border: "1px solid #2f3446",
                 borderRadius: 16,
                 padding: "4px 10px",
                 fontSize: 12,
-                color: "#475569",
+                color: "#cbd5e1",
                 cursor: loading ? "not-allowed" : "pointer",
                 whiteSpace: "nowrap",
                 fontWeight: 500,
@@ -499,13 +499,13 @@ function ChatUI({
             onChange={(e) => setInput(e.target.value)}
             placeholder="e.g., Add an HTTP node before End to fetch user profile..."
             disabled={loading}
-            style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 13, outline: "none" }}
+            style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid #3a4052", fontSize: 13, outline: "none" }}
           />
           <button
             type="submit"
             disabled={loading || !input.trim()}
             style={{
-              background: input.trim() && !loading ? "#4f46e5" : "#cbd5e1",
+              background: input.trim() && !loading ? "#4f46e5" : "#3a4052",
               color: "#fff",
               border: "none",
               borderRadius: 8,

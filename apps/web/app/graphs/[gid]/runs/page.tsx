@@ -48,7 +48,7 @@ export default function RunHistoryPage() {
       <div className="page-head">
         <div>
           <h1 style={{ margin: 0 }}>Run history</h1>
-          <p className="muted">Graph #{graphId}</p>
+          <p className="muted">Every time workflow #{graphId} ran: when, whether it worked, and how long it took. Click a run to see its steps.</p>
         </div>
         <Link className="btn" href={`/editor/${graphId}`}>Back to editor</Link>
       </div>

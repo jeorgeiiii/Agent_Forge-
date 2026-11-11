@@ -33,6 +33,8 @@ import {
   type NodeType,
   type NodeTypeSpec,
 } from "@/lib/api";
+import { BUTTON_HELP, nodeHelp } from "@/lib/help";
+import { ROLES, roleHelp, useRole } from "@/lib/roles";
 import NodeForm from "./node-form";
 
 type NodeData = { label: string; nodeType: NodeType; config: Record<string, unknown> };
@@ -41,7 +43,8 @@ type FlowNode = Node<NodeData, "agent">;
 const HIDDEN_TYPES = new Set(["trigger", "output"]); // legacy aliases kept only for old graphs
 const CATEGORY_ORDER = ["trigger", "ai", "flow", "data", "integration", "core"];
 const CATEGORY_TITLES: Record<string, string> = {
-  trigger: "Triggers", ai: "AI", flow: "Flow control", data: "Data", integration: "Integrations", core: "Core",
+  trigger: "How it starts", ai: "AI helpers", flow: "Decide & wait", data: "Work with information",
+  integration: "Other apps & websites", core: "Basics",
 };
 const CATEGORY_COLORS: Record<string, string> = {
   trigger: "#059669", ai: "#6366f1", flow: "#ea580c", data: "#3b82f6", integration: "#0891b2", core: "#10b981",
@@ -83,50 +86,45 @@ function toFlowEdges(edges: GraphEdge[] = []): Edge[] {
   });
 }
 
+const CATEGORY_ICONS: Record<string, string> = {
+  trigger: "⚡", ai: "✦", flow: "⑂", data: "▤", integration: "⇄", core: "●",
+};
+
 function AgentNode({ data, selected }: NodeProps<FlowNode>) {
   const specs = useContext(SpecsContext);
   const spec = specs[data.nodeType];
-  const color = CATEGORY_COLORS[spec?.category ?? "core"] ?? "#6366f1";
+  const category = spec?.category ?? "core";
+  const color = CATEGORY_COLORS[category] ?? "#6366f1";
   const outputs = outputsOf(spec, data.config);
   const isEntry = spec?.is_entry ?? (data.nodeType === "start" || data.nodeType === "trigger");
   const isEnd = spec?.is_end ?? (data.nodeType === "end" || data.nodeType === "output");
   const multi = outputs.length > 1;
+  const handleStyle = { background: color, width: 11, height: 11, border: "2px solid #16181f" };
 
   return (
     <div
+      className={`af-node${selected ? " selected" : ""}${isEntry ? " entry" : ""}`}
       style={{
-        background: "#ffffff",
-        border: selected ? "2px solid #4f46e5" : "1px solid #cbd5e1",
-        borderLeft: `5px solid ${color}`,
-        borderRadius: 8,
-        padding: "10px 14px",
-        paddingRight: multi ? 64 : 14,
-        minWidth: 170,
-        minHeight: multi ? outputs.length * 22 + 16 : undefined,
-        boxShadow: selected ? "0 4px 12px rgba(79, 70, 229, 0.2)" : "0 1px 3px rgba(0,0,0,0.08)",
-        fontSize: 13,
-        position: "relative",
-        fontFamily: "system-ui, sans-serif",
+        ["--node-color" as string]: color,
+        paddingRight: multi ? 76 : undefined,
+        minHeight: multi ? outputs.length * 24 + 22 : undefined,
       }}
     >
-      {!isEntry && <Handle type="target" position={Position.Left} style={{ background: color, width: 8, height: 8 }} />}
-      <div style={{ fontSize: 10, textTransform: "uppercase", fontWeight: 700, color, marginBottom: 2 }}>
-        {spec?.display_name ?? data.nodeType}
+      {!isEntry && <Handle type="target" position={Position.Left} style={handleStyle} />}
+      <div className="af-node-row">
+        <span className="af-node-icon" aria-hidden="true">{CATEGORY_ICONS[category] ?? "●"}</span>
+        <div className="af-node-text">
+          <span className="af-node-type">{spec?.display_name ?? data.nodeType}</span>
+          <strong className="af-node-name">{data.label}</strong>
+        </div>
       </div>
-      <strong style={{ display: "block", color: "#1e293b", fontSize: 14 }}>{data.label}</strong>
-      {!isEnd && !multi && (
-        <Handle type="source" position={Position.Right} style={{ background: color, width: 8, height: 8 }} />
-      )}
+      {!isEnd && !multi && <Handle type="source" position={Position.Right} style={handleStyle} />}
       {!isEnd && multi && outputs.map((output, index) => {
         const top = `${((index + 1) / (outputs.length + 1)) * 100}%`;
         return (
           <div key={output}>
-            <span style={{ position: "absolute", right: 12, top, transform: "translateY(-50%)", fontSize: 10,
-                           color: "#475569", background: "#f1f5f9", borderRadius: 4, padding: "0 4px" }}>
-              {output}
-            </span>
-            <Handle id={output} type="source" position={Position.Right}
-                    style={{ top, background: color, width: 8, height: 8 }} />
+            <span className="af-node-port" style={{ top }}>{output}</span>
+            <Handle id={output} type="source" position={Position.Right} style={{ ...handleStyle, top }} />
           </div>
         );
       })}
@@ -310,6 +308,9 @@ function GraphEditorCanvas({
     }
   }
 
+  const [role, setRole] = useRole();
+  const help = (type: string) => roleHelp(nodeHelp(type), type, role);
+
   const palette = useMemo(() => {
     const term = search.trim().toLowerCase();
     const visible = Object.values(specs).filter((spec) => !HIDDEN_TYPES.has(spec.type) &&
@@ -325,39 +326,73 @@ function GraphEditorCanvas({
       <div className="graph-editor" style={{ display: "flex", width: "100%", height: "100%", minWidth: 0, minHeight: 0, overflow: "hidden", position: "relative" }}>
         <aside className="ge-sidebar">
           <input className="ge-title" value={graphName} onChange={(e) => setGraphName(e.target.value)} aria-label="Graph name" maxLength={200} />
-          <input className="ge-search" placeholder="Search nodes…" value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Search nodes" />
+          <div className="ge-role" role="group" aria-label="Your role">
+            <span className="ge-role-label">Show examples for my job:</span>
+            <div className="ge-role-chips">
+              {ROLES.map((r) => (
+                <button key={r.id} type="button" className={`ge-role-chip${role === r.id ? " active" : ""}`}
+                        aria-pressed={role === r.id} onClick={() => setRole(r.id)}>
+                  <span aria-hidden="true">{r.icon}</span> {r.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <details className="ge-guide" open={nodes.length <= 3}>
+            <summary>How to build a workflow</summary>
+            <ol>
+              <li><strong>Add blocks:</strong> click a block below to put it on the board.</li>
+              <li><strong>Connect them:</strong> drag from the dot on a block&apos;s right side to the next block. Work flows left to right.</li>
+              <li><strong>Fill in settings:</strong> click a block to open its settings on the right.</li>
+              <li><strong>Try it:</strong> press ▶ Run and watch each step happen.</li>
+            </ol>
+          </details>
+          <input className="ge-search" placeholder="Search blocks, e.g. email, AI, wait…" value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Search blocks" />
           <div className="ge-palette" aria-label="Add a node">
             {palette.map(([category, items]) => (
               <div key={category}>
                 <div className="ge-category">{CATEGORY_TITLES[category] ?? category}</div>
                 {items.map((spec) => (
-                  <button key={spec.type} type="button" className="ge-palette-item" onClick={() => addNode(spec)} title={spec.description}>
+                  <button key={spec.type} type="button" className="ge-palette-item" onClick={() => addNode(spec)}
+                          title={`${help(spec.type).what}
+
+Example: ${help(spec.type).example}`}>
                     <span className="ge-dot" style={{ background: CATEGORY_COLORS[spec.category] ?? "#6366f1" }} />
-                    <span className="ge-palette-name">{spec.display_name}</span>
+                    <span className="ge-palette-name">
+                      {spec.display_name}
+                      <small className="ge-palette-short">{help(spec.type).short}</small>
+                    </span>
                     <span aria-hidden="true" className="ge-plus">+</span>
                   </button>
                 ))}
               </div>
             ))}
-            {ready && palette.length === 0 && <p className="ge-help">No node matches “{search}”.</p>}
+            {ready && palette.length === 0 && <p className="ge-help">No block matches “{search}”. Try another word.</p>}
           </div>
           <div className="ge-save">
-            <button type="button" className="ge-primary" onClick={() => void saveGraph()} disabled={!ready || saving}>
+            <button type="button" className="ge-primary" onClick={() => void saveGraph()} disabled={!ready || saving}
+                    title={BUTTON_HELP.save}>
               {saving ? "Saving…" : "Save workflow"}
             </button>
+            <small className="ge-btn-help">{BUTTON_HELP.save}</small>
             <div className="ge-run-row">
-              <button type="button" className="ge-secondary" onClick={() => void runGraph()} disabled={!ready || saving}>▶ Run</button>
-              <Link className="ge-secondary" href={`/graphs/${graphId}/runs`}>Run history</Link>
+              <button type="button" className="ge-secondary" onClick={() => void runGraph()} disabled={!ready || saving}
+                      title={BUTTON_HELP.run}>▶ Run</button>
+              <Link className="ge-secondary" href={`/graphs/${graphId}/runs`} title={BUTTON_HELP.history}>Run history</Link>
             </div>
+            <small className="ge-btn-help"><strong>Run:</strong> {BUTTON_HELP.run}</small>
+            <small className="ge-btn-help"><strong>Run history:</strong> {BUTTON_HELP.history}</small>
             {notice && <p role="status" className={`ge-notice ge-${notice.kind}`}>{notice.text}</p>}
           </div>
         </aside>
 
         <div className="graph-canvas" style={{ flex: 1, height: "100%", minWidth: 0, minHeight: 0, position: "relative" }}>
           <ReactFlow
+            colorMode="dark"
             nodes={nodes}
             edges={edges}
             nodeTypes={nodeTypes}
+            defaultEdgeOptions={{ animated: true, style: { stroke: "#5b6478", strokeWidth: 2 } }}
+            proOptions={{ hideAttribution: true }}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
@@ -367,11 +402,28 @@ function GraphEditorCanvas({
             deleteKeyCode={["Backspace", "Delete"]}
             style={{ width: "100%", height: "100%" }}
           >
-            <Background color="#dbe2ef" gap={22} />
-            <MiniMap pannable zoomable />
+            <Background color="#2b3040" gap={22} size={1.6} bgColor="#16181f" />
+            {/* Default minimap colours are light grey on white - nearly invisible. Colour blocks by type instead. */}
+            <MiniMap
+              pannable
+              zoomable
+              ariaLabel="Mini map of the whole workflow"
+              bgColor="#1c1f2a"
+              maskColor="rgba(0, 0, 0, 0.45)"
+              maskStrokeColor="#818cf8"
+              maskStrokeWidth={2}
+              nodeBorderRadius={6}
+              nodeStrokeWidth={3}
+              nodeColor={(node) => CATEGORY_COLORS[specs[(node.data as NodeData).nodeType]?.category ?? "core"] ?? "#6366f1"}
+              nodeStrokeColor={(node) => (node.id === selectedId ? "#ffffff" : "#1c1f2a")}
+              style={{ border: "1px solid #2f3446", borderRadius: 10, boxShadow: "0 6px 20px rgba(0, 0, 0, 0.45)" }}
+            />
             <Controls />
           </ReactFlow>
           {!ready && <div className="ge-loading">Loading workflow…</div>}
+          {ready && nodes.length === 0 && (
+            <div className="ge-empty">Click a block on the left to start building.</div>
+          )}
         </div>
 
         {selectedNode && (
@@ -383,14 +435,18 @@ function GraphEditorCanvas({
               </div>
               <button type="button" className="ge-close" onClick={() => setSelectedId(undefined)} aria-label="Close settings">×</button>
             </div>
-            {selectedSpec?.description && <p className="ge-help">{selectedSpec.description}</p>}
-            <label className="nf-label" htmlFor="ge-node-label">label</label>
+            <div className="ge-help-card">
+              <p><strong>What it does:</strong> {help(selectedNode.data.nodeType).what}</p>
+              <p><strong>Example:</strong> {help(selectedNode.data.nodeType).example}</p>
+              <p><strong>Where to put it:</strong> {help(selectedNode.data.nodeType).where}</p>
+            </div>
+            <label className="nf-label" htmlFor="ge-node-label">name of this block</label>
             <input id="ge-node-label" className="nf-input" value={selectedNode.data.label}
                    onChange={(e) => updateNode(selectedNode.id, { label: e.target.value })} />
 
             <div className="ge-tabs">
-              <button type="button" className={!rawMode ? "active" : ""} onClick={() => setRawMode(false)}>Form</button>
-              <button type="button" className={rawMode ? "active" : ""}
+              <button type="button" className={!rawMode ? "active" : ""} onClick={() => setRawMode(false)} title={BUTTON_HELP.formTab}>Form</button>
+              <button type="button" className={rawMode ? "active" : ""} title={BUTTON_HELP.jsonTab}
                       onClick={() => { setRawText(JSON.stringify(selectedNode.data.config, null, 2)); setRawMode(true); }}>JSON</button>
             </div>
             {!rawMode && selectedSpec && (
@@ -409,7 +465,8 @@ function GraphEditorCanvas({
                 {nodeErrors.map((error) => <li key={error}>{error}</li>)}
               </ul>
             )}
-            <button type="button" className="ge-danger" onClick={deleteSelected}>Delete node</button>
+            <button type="button" className="ge-danger" onClick={deleteSelected} title={BUTTON_HELP.deleteNode}>Delete block</button>
+            <small className="ge-btn-help">{BUTTON_HELP.deleteNode}</small>
           </aside>
         )}
       </div>

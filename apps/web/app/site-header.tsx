@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import { createWorkspace } from "@/lib/api";
+import { BUTTON_HELP } from "@/lib/help";
 import { useSession } from "@/lib/session";
 
 const NEW_WORKSPACE = "__new__";
@@ -46,6 +47,7 @@ export default function SiteHeader() {
             <select
               id="workspace-switcher"
               className="workspace-switcher"
+              title={BUTTON_HELP.workspace}
               value={workspace?.id ?? ""}
               onChange={(event) => void onWorkspaceChange(event.target.value)}
             >

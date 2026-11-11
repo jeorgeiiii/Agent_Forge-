@@ -3,6 +3,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ApiError, createGraph, listGraphs, type Graph } from "@/lib/api";
+import { BUTTON_HELP } from "@/lib/help";
+import { ROLES, useRole } from "@/lib/roles";
 import { useSession } from "@/lib/session";
 
 const defaultGraphDefinition = {
@@ -24,6 +26,7 @@ export default function Home() {
   const [graphs, setGraphs] = useState<Graph[] | null>(null);
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
+  const [role, setRole] = useRole();
 
   useEffect(() => {
     fetch("/api/health")
@@ -79,8 +82,9 @@ export default function Home() {
           </p>
         </div>
         {canEdit && (
-          <button className="btn primary" onClick={() => void create()} disabled={creating || status === "loading"}>
-            {creating ? "Creating…" : "+ New graph"}
+          <button className="btn primary" onClick={() => void create()} disabled={creating || status === "loading"}
+                  title={BUTTON_HELP.newGraph}>
+            {creating ? "Creating…" : "+ New workflow"}
           </button>
         )}
       </div>
@@ -92,10 +96,24 @@ export default function Home() {
         </span>
       </p>
       {error && <p className="form-error" role="alert">{error}</p>}
+      <p className="muted hint-line">
+        A <strong>workflow</strong> is a set of blocks joined together - like a recipe your computer follows step by step.
+        {canEdit && <> Press <strong>+ New workflow</strong> to start one, or click a workflow below to change it.</>}
+      </p>
+
+      <div className="home-role" role="group" aria-label="Your role">
+        <span className="muted">What&apos;s your role? We&apos;ll show examples from your field:</span>
+        {ROLES.map((r) => (
+          <button key={r.id} type="button" className={`ge-role-chip${role === r.id ? " active" : ""}`}
+                  aria-pressed={role === r.id} onClick={() => setRole(r.id)}>
+            <span aria-hidden="true">{r.icon}</span> {r.label}
+          </button>
+        ))}
+      </div>
 
       <div className="list">
         {graphs === null && <p className="muted">Loading…</p>}
-        {graphs?.length === 0 && !error && <p className="muted">No graphs yet. Create your first one.</p>}
+        {graphs?.length === 0 && !error && <p className="muted">No workflows yet. Press + New workflow to make your first one.</p>}
         {graphs?.map((g) => (
           <Link key={g.id} href={`/editor/${g.id}`} className="card">
             <div>

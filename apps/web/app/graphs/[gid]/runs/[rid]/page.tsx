@@ -13,6 +13,7 @@ import {
   type RunDetails,
   type RunEvent,
 } from "@/lib/api";
+import { BUTTON_HELP } from "@/lib/help";
 import StatusBadge from "../status-badge";
 
 const TERMINAL = new Set(["success", "failed", "cancelled"]);
@@ -143,10 +144,10 @@ export default function RunInspectorPage() {
           <Link className="btn" href={`/graphs/${graphId}/runs`}>All runs</Link>
           <Link className="btn" href={`/editor/${graphId}`}>Editor</Link>
           {!TERMINAL.has(run.status) && (
-            <button className="btn" disabled={busy} onClick={() => void act(() => cancelRun(graphId, runId))}>Cancel run</button>
+            <button className="btn" disabled={busy} title={BUTTON_HELP.cancel} onClick={() => void act(() => cancelRun(graphId, runId))}>Cancel run</button>
           )}
           {details.can_retry && (
-            <button className="btn primary" disabled={busy}
+            <button className="btn primary" disabled={busy} title={BUTTON_HELP.retry}
                     onClick={() => void act(() => retryRun(graphId, runId),
                       (r) => router.push(`/graphs/${graphId}/runs/${(r as { id: number }).id}`))}>
               Retry from failed node
@@ -155,24 +156,28 @@ export default function RunInspectorPage() {
         </div>
       </div>
       {error && <p className="form-error" role="alert">{error}</p>}
+      {!TERMINAL.has(run.status) && <p className="muted hint-line"><strong>Cancel run:</strong> {BUTTON_HELP.cancel}</p>}
+      {details.can_retry && <p className="muted hint-line"><strong>Retry from failed node:</strong> {BUTTON_HELP.retry}</p>}
 
       {waiting && run.status === "paused" && (
         <section className="panel-box approval-box">
-          <h2>Waiting for approval</h2>
-          <p>Node <code>{waiting.node_id}</code>{waiting.message ? `: ${waiting.message}` : ""}</p>
+          <h2>Waiting for your approval</h2>
+          <p>The workflow is paused at <code>{waiting.node_id}</code> and needs a person to decide before it continues.</p>
+          {waiting.message && <p><strong>Question:</strong> {waiting.message}</p>}
           <input className="input-field" placeholder="Comment (optional)" value={comment} onChange={(e) => setComment(e.target.value)} />
           <div className="header-right">
-            <button className="btn primary" disabled={busy} onClick={() => void act(() => decideApproval(graphId, runId, waiting.node_id, true, comment))}>Approve</button>
-            <button className="btn" disabled={busy} onClick={() => void act(() => decideApproval(graphId, runId, waiting.node_id, false, comment))}>Reject</button>
+            <button className="btn primary" disabled={busy} title={BUTTON_HELP.approve} onClick={() => void act(() => decideApproval(graphId, runId, waiting.node_id, true, comment))}>Approve</button>
+            <button className="btn" disabled={busy} title={BUTTON_HELP.reject} onClick={() => void act(() => decideApproval(graphId, runId, waiting.node_id, false, comment))}>Reject</button>
           </div>
+          <p className="muted hint-line"><strong>Approve:</strong> {BUTTON_HELP.approve}<br /><strong>Reject:</strong> {BUTTON_HELP.reject}</p>
         </section>
       )}
 
       <section className="stat-row">
-        <div className="stat"><span className="muted">LLM calls</span><strong>{cost.llm_calls}</strong></div>
-        <div className="stat"><span className="muted">Tokens (in + out)</span><strong>{cost.input_tokens} + {cost.output_tokens}</strong></div>
-        <div className="stat"><span className="muted">Cost</span><strong>{usd(cost.total_cost_usd)}</strong></div>
-        <div className="stat"><span className="muted">Events</span><strong>{events.length}</strong></div>
+        <div className="stat" title="How many times an AI was asked something"><span className="muted">AI questions</span><strong>{cost.llm_calls}</strong></div>
+        <div className="stat" title="Tokens are small pieces of text (about 4 letters). AI services charge per token."><span className="muted">AI text used (in + out)</span><strong>{cost.input_tokens} + {cost.output_tokens}</strong></div>
+        <div className="stat" title="What the AI part of this run cost, based on your price settings"><span className="muted">Cost</span><strong>{usd(cost.total_cost_usd)}</strong></div>
+        <div className="stat" title="Every small thing that happened during the run"><span className="muted">Events</span><strong>{events.length}</strong></div>
       </section>
       {cost.unpriced_models.length > 0 && (
         <p className="muted">No price set for {cost.unpriced_models.join(", ")} - add it to MODEL_PRICES to see its cost.</p>
@@ -185,6 +190,7 @@ export default function RunInspectorPage() {
 
       <section className="panel-box">
         <h2>Steps</h2>
+        <p className="muted hint-line">Each block in your workflow, whether it worked, and how long it took. Click “show” to see what it produced.</p>
         <table className="run-table">
           <thead><tr><th>Node</th><th>Status</th><th>Time</th><th>Output / error</th></tr></thead>
           <tbody>
@@ -206,7 +212,8 @@ export default function RunInspectorPage() {
 
       {llmCalls.length > 0 && (
         <section className="panel-box">
-          <h2>LLM calls</h2>
+          <h2>AI questions</h2>
+          <p className="muted hint-line">Every time an AI was asked something: what it was asked, what it answered, and what it cost. Click one to read it.</p>
           {llmCalls.map((call) => (
             <details key={call.id} className="llm-call">
               <summary>
@@ -223,6 +230,7 @@ export default function RunInspectorPage() {
 
       <section className="panel-box">
         <h2>Timeline {live && <span className="muted">(updating live)</span>}</h2>
+        <p className="muted hint-line">Everything that happened, in order, as it happened.</p>
         <ol className="timeline">
           {events.map((event) => (
             <li key={event.id}>
