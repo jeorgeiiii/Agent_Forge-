@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..models import RunEventRecord, RunRecord
+from .audit import mask_secret_values
 
 MAX_EVENT_DATA_CHARS = 20_000
 
@@ -63,7 +64,8 @@ def ingest_events(db: Session, run: RunRecord, events: list[dict[str, Any]], *, 
         seq = int(event.get("seq", -1))
         if seq < 0 or seq in existing:
             continue
-        data = dict(event.get("data") or {})
+        # never store key-shaped strings (a prompt or tool result may contain one)
+        data = mask_secret_values(dict(event.get("data") or {}))
         if event.get("type") == "llm.call":
             data["cost_usd"] = price_llm_call(data.get("model"), int(data.get("input_tokens", 0)),
                                               int(data.get("output_tokens", 0)))

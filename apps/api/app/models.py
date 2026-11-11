@@ -80,6 +80,8 @@ class WorkspaceRecord(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    # Cluster 18: per-workspace overrides of the retention defaults (None = use defaults)
+    retention: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
@@ -160,6 +162,7 @@ class RunRecord(Base):
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     retry_of_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # set by retry_run
+    compacted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)  # cluster 18
 
     graph: Mapped[GraphRecord] = relationship(back_populates="runs")
 
@@ -283,6 +286,11 @@ class AuditChainHead(Base):
     chain: Mapped[str] = mapped_column(String(40), primary_key=True)
     last_position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Retention: rows up to pruned_position were deleted; pruned_hash is the hash of the last deleted
+    # row, so verification can still start from a known anchor.
+    pruned_position: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
+    pruned_hash: Mapped[str] = mapped_column(String(64), default="0" * 64, server_default=text("'" + "0" * 64 + "'"),
+                                             nullable=False)
 
 
 class MemorySessionRecord(Base):

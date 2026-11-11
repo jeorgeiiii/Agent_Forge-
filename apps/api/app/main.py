@@ -20,6 +20,7 @@ from .routes import (
     messages,
     node_types,
     public_triggers,
+    retention,
     runs,
     usage,
     workspaces,
@@ -45,13 +46,31 @@ async def _reconcile_loop(interval: int) -> None:
             log.exception("Run reconciliation failed")
 
 
+async def _retention_loop(hours: float) -> None:
+    """Data retention (cluster 18): run every `hours`; every job is idempotent."""
+    from .services.retention import run_retention
+
+    while True:
+        await asyncio.sleep(hours * 3600)
+        try:
+            with SessionLocal() as db:
+                report = await run_retention(db)
+            log.info("Retention run: %s", report)
+        except Exception:  # never let the background job die
+            log.exception("Retention run failed")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     initialize_database()
-    interval = get_settings().run_reconcile_interval_seconds
-    task = asyncio.create_task(_reconcile_loop(interval)) if interval > 0 else None
+    settings = get_settings()
+    tasks = []
+    if settings.run_reconcile_interval_seconds > 0:
+        tasks.append(asyncio.create_task(_reconcile_loop(settings.run_reconcile_interval_seconds)))
+    if settings.retention_interval_hours > 0:
+        tasks.append(asyncio.create_task(_retention_loop(settings.retention_interval_hours)))
     yield
-    if task:
+    for task in tasks:
         task.cancel()
 
 
@@ -79,6 +98,7 @@ for router in (
     workspaces.router,
     graphs.router,
     runs.router,
+    retention.router,
     memory.router,
     usage.router,
     node_types.router,

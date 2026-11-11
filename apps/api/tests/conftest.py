@@ -16,6 +16,7 @@ os.environ.update({
     "AUTH_REQUIRED": "false",
     "TRUSTED_PROXIES": "testclient",  # TestClient's peer; tests send X-Forwarded-For
     "RUN_RECONCILE_INTERVAL_SECONDS": "0",
+    "RETENTION_INTERVAL_HOURS": "0",
     "MODEL_PRICES": "{\"llama-test\": {\"input\": 1.0, \"output\": 2.0}}",
     "COPILOT_API_KEY": "",
     "GROQ_API_KEY": "",

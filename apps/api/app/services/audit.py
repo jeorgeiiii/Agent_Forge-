@@ -241,9 +241,11 @@ def verify_audit_chain(db: Session, user_id: int | None, workspace_id: int | Non
     if workspace_id is not None:
         require_role(db, user_id, workspace_id, "owner")
     chain = _chain_for(workspace_id)
-    prev = GENESIS
+    head = db.get(AuditChainHead, chain)
+    # after retention pruning, the chain starts at the anchor left by the pruner
+    prev = head.pruned_hash if head else GENESIS
     checked = 0
-    expected_position = 1
+    expected_position = (head.pruned_position if head else 0) + 1
     for event in db.scalars(select(AuditEventRecord).where(AuditEventRecord.chain == chain).order_by(AuditEventRecord.position)):
         if event.position != expected_position:
             return {"chain": chain, "valid": False, "checked": checked, "broken_at_id": event.id,
@@ -257,11 +259,60 @@ def verify_audit_chain(db: Session, user_id: int | None, workspace_id: int | Non
                     "reason": "content does not match its hash (this row was modified)"}
         prev = event.hash
         checked += 1
-    head = db.get(AuditChainHead, chain)
-    if head and (head.last_hash != prev or head.last_position != checked):
+    if head and (head.last_hash != prev or head.last_position != head.pruned_position + checked):
         return {"chain": chain, "valid": False, "checked": checked, "broken_at_id": None,
                 "reason": "newest rows are missing (chain head does not match)"}
-    return {"chain": chain, "valid": True, "checked": checked}
+    result = {"chain": chain, "valid": True, "checked": checked}
+    if head and head.pruned_position:
+        result["pruned_before_position"] = head.pruned_position + 1  # older entries removed by retention
+    return result
+
+
+def prune_audit_chain(db: Session, chain: str, older_than: datetime, *, dry_run: bool = False) -> int:
+    """Delete a chain's oldest entries (created before `older_than`) while keeping it verifiable.
+
+    Only a *prefix* is removed; the hash of the last removed entry becomes the
+    chain's new anchor (head.pruned_hash), so verify_audit_chain still proves
+    nothing after it was changed.
+    """
+    head = db.get(AuditChainHead, chain)
+    if head is None:
+        return 0
+    old = list(db.scalars(
+        select(AuditEventRecord)
+        .where(AuditEventRecord.chain == chain, AuditEventRecord.created_at < older_than.isoformat())
+        .order_by(AuditEventRecord.position)
+    ))
+    # stop at the first gap in time order so the removed part is exactly a prefix
+    prefix = []
+    expected = head.pruned_position + 1
+    for event in old:
+        if event.position != expected:
+            break
+        prefix.append(event)
+        expected += 1
+    if dry_run or not prefix:
+        return len(prefix)
+    last = prefix[-1]
+    db.execute(update(AuditChainHead).where(AuditChainHead.chain == chain)
+               .values(pruned_position=last.position, pruned_hash=last.hash))
+    for event in prefix:
+        db.delete(event)
+    db.commit()
+    return len(prefix)
+
+
+def mask_secret_values(value: Any, depth: int = 0) -> Any:
+    """Replace key-shaped strings (gsk_..., sk-..., Bearer ...) anywhere in a JSON-like value."""
+    if depth > 8:
+        return value
+    if isinstance(value, dict):
+        return {k: mask_secret_values(v, depth + 1) for k, v in value.items()}
+    if isinstance(value, list):
+        return [mask_secret_values(v, depth + 1) for v in value]
+    if isinstance(value, str):
+        return SECRET_VALUE.sub("[redacted]", value)
+    return value
 
 
 def export_csv(events: list[AuditEventRecord]) -> str:

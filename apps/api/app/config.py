@@ -20,6 +20,13 @@ class Settings(BaseSettings):
     # http://localhost:4318/v1/traces (Jaeger / Grafana Tempo / Langfuse OTLP endpoint).
     otel_exporter_otlp_endpoint: str = ""
     otel_exporter_otlp_headers: str = ""  # "Authorization=Basic xxx,x-tenant=abc"
+    # --- Data retention (cluster 18); workspace owners can override per workspace ---
+    retention_run_data_days: int = 30        # then run input/output/state/events are deleted ("compacted")
+    retention_run_rows_days: int = 365       # then the run row itself is deleted
+    retention_memory_days: int = 90          # chat memory idle this long is deleted
+    retention_deleted_graph_days: int = 30   # restore window before a deleted graph is purged
+    retention_audit_days: int = 365          # audit entries older than this are pruned (chain stays verifiable)
+    retention_interval_hours: float = 6      # how often the cleanup job runs (0 = off)
     # How often the API repairs runs whose final status never arrived (0 = off).
     run_reconcile_interval_seconds: int = 30
     temporal_address: str = "localhost:7233"
