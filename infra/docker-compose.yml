@@ -1,0 +1,92 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: agentforge
+      POSTGRES_USER: agentforge
+      POSTGRES_PASSWORD: agentforge-local
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentforge -d agentforge"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  temporal:
+    image: temporalio/temporal:1.5.1
+    command: ["server", "start-dev", "--ip", "0.0.0.0"]
+    ports:
+      - "7233:7233"
+      - "8233:8233"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://agentforge:agentforge-local@postgres:5432/agentforge
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_TASK_QUEUE: agentforge
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: http://localhost:3000
+      COPILOT_API_URL: ${COPILOT_API_URL:-}
+      COPILOT_API_KEY: ${COPILOT_API_KEY:-}
+      COPILOT_MODEL: ${COPILOT_MODEL:-gpt-4o-mini}
+      AUTH_REQUIRED: ${AUTH_REQUIRED:-false}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-dev-internal-token-change-me}
+      CREDENTIALS_MASTER_KEY: ${CREDENTIALS_MASTER_KEY:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+
+  worker:
+    build:
+      context: ..
+      dockerfile: apps/worker/Dockerfile
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_TASK_QUEUE: agentforge
+      AGENTFORGE_API_URL: http://api:8000
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-dev-internal-token-change-me}
+    depends_on:
+      temporal:
+        condition: service_started
+      api:
+        condition: service_started
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      INTERNAL_API_URL: http://api:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_started
+
+volumes:
+  postgres-data:
+  redis-data:

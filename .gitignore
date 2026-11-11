@@ -1,0 +1,35 @@
+# --- secrets: never commit (use .env.example as the template) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- dependencies ---
+node_modules/
+.venv/
+venv/
+
+# --- build output / caches ---
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- local data ---
+*.db
+*.db-shm
+*.db-wal
+*.sqlite3
+
+# --- local tool output ---
+graphify-out/
+.DS_Store
+Thumbs.db
