@@ -19,6 +19,7 @@ from .routes import (
     node_types,
     public_triggers,
     runs,
+    usage,
     workspaces,
 )
 from .services.common import ServiceError
@@ -75,6 +76,7 @@ for router in (
     workspaces.router,
     graphs.router,
     runs.router,
+    usage.router,
     node_types.router,
     credentials.router,
     copilot.router,

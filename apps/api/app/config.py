@@ -12,6 +12,14 @@ class Settings(BaseSettings):
     # Only these direct peers may set X-Forwarded-For (comma-separated IPs/hostnames
     # of your reverse proxy / load balancer). Empty = never trust the header.
     trusted_proxies: str = ""
+    # LLM prices for cost tracking, USD per 1M tokens, as JSON:
+    # {"openai/gpt-oss-120b": {"input": 0.15, "output": 0.75}}  <- check your provider's pricing page.
+    # Models not listed are traced with cost_usd = null.
+    model_prices: str = "{}"
+    # OpenTelemetry: where POST /runs/{id}/trace/export sends OTLP/HTTP JSON traces, e.g.
+    # http://localhost:4318/v1/traces (Jaeger / Grafana Tempo / Langfuse OTLP endpoint).
+    otel_exporter_otlp_endpoint: str = ""
+    otel_exporter_otlp_headers: str = ""  # "Authorization=Basic xxx,x-tenant=abc"
     # How often the API repairs runs whose final status never arrived (0 = off).
     run_reconcile_interval_seconds: int = 30
     temporal_address: str = "localhost:7233"

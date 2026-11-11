@@ -127,7 +127,9 @@ def _validate(value: Any, schema: dict[str, Any], path: str, errors: list[str]) 
             if key not in value or value[key] in (None, ""):
                 errors.append(f"{(path + '.') if path else ''}{key} is required.")
         for key, sub in value.items():
-            if key in props:
+            # null on an optional field means "not set" (editors often send it); required
+            # fields are already reported above.
+            if key in props and sub is not None:
                 _validate(sub, props[key], f"{(path + '.') if path else ''}{key}", errors)
     if isinstance(value, list) and "items" in schema:
         for index, item in enumerate(value):

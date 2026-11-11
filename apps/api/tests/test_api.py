@@ -198,3 +198,73 @@ def test_stale_checkpoint_does_not_overwrite_newer_state(client):
     client.post(f"/internal/runs/{wid}/checkpoint", json={"seq": 3, "status": "running"}, headers=internal)
     run = client.get(f"/graphs/{graph['id']}/runs").json()[0]
     assert run["status"] == "success" and run["output"] == "new"
+
+
+def test_internal_memory_endpoints(client):
+    internal = {"X-Internal-Token": "test-internal-token"}
+    key = "mem:" + "a" * 40
+    assert client.get(f"/internal/memory/{key}").status_code == 403  # worker-only
+    for i in range(3):
+        client.post(f"/internal/memory/{key}", headers=internal, json={"messages": [
+            {"role": "user", "content": f"q{i}"}, {"role": "assistant", "content": f"a{i}"},
+            {"role": "system", "content": "ignored"}]})
+    last = client.get(f"/internal/memory/{key}?limit=2", headers=internal).json()["messages"]
+    assert last == [{"role": "user", "content": "q2"}, {"role": "assistant", "content": "a2"}]
+    assert client.get("/internal/memory/not-a-mem-key", headers=internal).status_code == 422
+
+
+def _run_row(client, name):
+    graph = client.post("/graphs", json={"name": name}).json()
+    client.post(f"/graphs/{graph['id']}/runs", json={"input": {}})  # 503 without Temporal, but the row exists
+    run = client.get(f"/graphs/{graph['id']}/runs").json()[0]
+    return graph["id"], run
+
+
+def test_events_are_ingested_once_priced_and_streamed_with_resume(client):
+    gid, run = _run_row(client, "Events")
+    internal = {"X-Internal-Token": "test-internal-token"}
+    events = [
+        {"seq": 1, "type": "run.started", "data": {}},
+        {"seq": 2, "type": "llm.call", "node_id": "bot", "data": {"model": "llama-test", "input_tokens": 1000, "output_tokens": 500}},
+        {"seq": 3, "type": "llm.call", "node_id": "bot", "data": {"model": "unknown-model", "input_tokens": 5, "output_tokens": 5}},
+    ]
+    client.post(f"/internal/runs/{run['workflow_id']}/checkpoint", headers=internal,
+                json={"seq": 1, "status": "running", "usage": {"llm_calls": 2}, "events": events})
+    # retried delivery of the same events + the final ones: duplicates are dropped
+    client.post(f"/internal/runs/{run['workflow_id']}/checkpoint", headers=internal,
+                json={"seq": 2, "status": "success", "output": "ok", "usage": {"llm_calls": 2},
+                      "events": events + [{"seq": 4, "type": "run.finished", "data": {"status": "success"}}]})
+    stored = client.get(f"/graphs/{gid}/runs/{run['id']}/events").json()
+    assert [e["seq"] for e in stored] == [1, 2, 3, 4]
+    assert stored[1]["data"]["cost_usd"] == 0.002      # 1000*$1/1M + 500*$2/1M
+    assert stored[2]["data"]["cost_usd"] is None       # unpriced model
+    detail = client.get(f"/graphs/{gid}/runs/{run['id']}").json()
+    assert "events" not in detail["state"]
+    status = client.get(f"/graphs/{gid}/runs/{run['id']}/status").json()
+    assert status["usage"] == {"llm_calls": 2, "cost_usd": 0.002}  # summed from the event log
+
+    # sub-agent events use their own source + seq space: same seq numbers do not collide
+    client.post(f"/internal/runs/{run['workflow_id']}/events", headers=internal,
+                json={"source": "child-wf-1", "events": [{"seq": 1, "type": "llm.call", "node_id": "bot/helper",
+                                                          "data": {"model": "llama-test", "input_tokens": 1000, "output_tokens": 0}}]})
+    client.post(f"/internal/runs/{run['workflow_id']}/events", headers=internal,
+                json={"source": "child-wf-1", "events": [{"seq": 1, "type": "llm.call", "data": {}}]})  # duplicate
+    stored = client.get(f"/graphs/{gid}/runs/{run['id']}/events").json()
+    assert [(e["source"], e["seq"]) for e in stored][-1] == ("child-wf-1", 1) and len(stored) == 5
+    assert client.get(f"/graphs/{gid}/runs/{run['id']}/status").json()["usage"]["cost_usd"] == 0.003
+
+    with client.stream("GET", f"/graphs/{gid}/runs/{run['id']}/events/stream") as response:
+        body = "".join(response.iter_text())
+    ids = [int(line[4:]) for line in body.splitlines() if line.startswith("id: ")]
+    assert len(ids) == 5 and "event: llm.call" in body and body.rstrip().endswith('data: {"status": "success"}')
+
+    with client.stream("GET", f"/graphs/{gid}/runs/{run['id']}/events/stream", headers={"Last-Event-ID": str(ids[1])}) as response:
+        resumed = "".join(response.iter_text())
+    assert [int(line[4:]) for line in resumed.splitlines() if line.startswith("id: ")] == ids[2:]  # picks up after id 2
+
+
+def test_event_stream_requires_access(client):
+    gid, run = _run_row(client, "Private events")
+    token = _signup(client, "outsider@example.com")
+    owner_graph = client.post("/graphs", json={"name": "Owned"}, headers=_headers(_signup(client, "owner2@example.com"))).json()
+    assert client.get(f"/graphs/{owner_graph['id']}/runs/1/events/stream", headers=_headers(token)).status_code == 404

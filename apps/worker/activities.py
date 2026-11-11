@@ -303,12 +303,44 @@ async def llm_chat(request: dict[str, Any]) -> dict[str, Any]:
 
 
 @activity.defn
+async def load_memory(key: str, limit: int) -> list[dict[str, Any]]:
+    """Past messages of a conversation (oldest first), read through the API."""
+    result = await api_client.call("GET", f"/internal/memory/{key}?limit={int(limit)}")
+    return result.get("messages") or []
+
+
+@activity.defn
+async def save_memory(key: str, messages: list[dict[str, Any]]) -> None:
+    """Append this run's user message + agent answer to the conversation."""
+    await api_client.call("POST", f"/internal/memory/{key}", json={"messages": messages})
+
+
+@activity.defn
+async def emit_events(workflow_id: str, source: str, events: list[dict[str, Any]]) -> None:
+    """Deliver run events right away (live view) without sending the whole run state."""
+    if not api_client.is_configured():
+        return
+    try:
+        await api_client.call("POST", f"/internal/runs/{workflow_id}/events", json={"source": source, "events": events})
+    except api_client.InternalApiError as error:
+        if error.status_code == 404:  # no run row: nothing to attach the events to
+            return
+        raise
+
+
+@activity.defn
 async def checkpoint_state(workflow_id: str, state: dict[str, Any]) -> None:
     """Persist run state to Postgres (through the API) so it survives crashes and can be inspected."""
     if not api_client.is_configured():
         log.warning("INTERNAL_API_TOKEN not set; skipping checkpoint for %s", workflow_id)
         return
-    await api_client.call("POST", f"/internal/runs/{workflow_id}/checkpoint", json=state)
+    try:
+        await api_client.call("POST", f"/internal/runs/{workflow_id}/checkpoint", json=state)
+    except api_client.InternalApiError as error:
+        if error.status_code == 404:  # no run row (e.g. started outside the API): retrying cannot help
+            log.warning("No run row for %s; checkpoint dropped", workflow_id)
+            return
+        raise
 
 
 @activity.defn

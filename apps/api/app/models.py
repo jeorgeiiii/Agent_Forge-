@@ -159,8 +159,32 @@ class RunRecord(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    retry_of_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # set by retry_run
 
     graph: Mapped[GraphRecord] = relationship(back_populates="runs")
+
+
+class RunEventRecord(Base):
+    """Cluster 11 - append-only event log of a run (what the live view streams).
+
+    ``id`` is the global stream cursor (SSE ``Last-Event-ID``). ``source`` is who
+    produced the event ("" = the run itself, else a sub-agent's workflow id) and
+    ``seq`` that producer's counter; (run, source, seq) is unique, so retried
+    deliveries are dropped.
+    """
+
+    __tablename__ = "run_events"
+    __table_args__ = (UniqueConstraint("run_id", "source", "seq", name="uq_run_event_source_seq"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), index=True, nullable=False)
+    source: Mapped[str] = mapped_column(String(250), default="", server_default=text("''"), nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    type: Mapped[str] = mapped_column(String(40), nullable=False)
+    node_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    data: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict, nullable=False)
+    at: Mapped[str | None] = mapped_column(String(40), nullable=True)  # when it happened (workflow clock, ISO)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 # --------------------------------------------------------------------------- #

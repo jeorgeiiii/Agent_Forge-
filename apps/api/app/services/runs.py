@@ -21,7 +21,8 @@ from ..config import get_settings
 from ..models import GraphRecord, RunRecord
 from .authz import can_user_edit_graph, can_user_view_graph
 from .common import Forbidden, NotFound, ServiceError, now_utc
-from .graphs import get_latest_version_of_graph, get_published_version
+from .events import ingest_events, run_cost
+from .graphs import get_latest_version_of_graph, get_published_version, get_version
 
 TERMINAL_STATUSES = {"success", "failed", "cancelled"}
 _TEMPORAL_TO_STATUS = {
@@ -56,7 +57,13 @@ async def get_temporal_client() -> Client:
     return _client
 
 
-def _ir_for(db: Session, graph: GraphRecord, use_published: bool) -> tuple[dict[str, Any], int]:
+def _ir_for(db: Session, graph: GraphRecord, use_published: bool, version: int | None = None) -> tuple[dict[str, Any], int]:
+    if version is not None:  # an exact saved version (used by retry_run)
+        record = get_version(db, graph, version)
+        try:
+            return record.compiled_ir or compile_graph(record.definition), record.version
+        except GraphValidationError as error:
+            raise ServiceError(f"Version {version} is invalid: {error}", 422) from error
     if use_published:
         version = get_published_version(db, graph)
         if version is None or not version.compiled_ir:
@@ -79,11 +86,13 @@ async def start_run(
     trigger_kind: str = "manual",
     use_published: bool = False,
     checkpoint: dict[str, Any] | None = None,
+    version: int | None = None,
+    retry_of: int | None = None,
 ) -> RunRecord:
     """Create a run row and start the Temporal workflow. Returns immediately."""
     if check_access and not can_user_edit_graph(db, user_id, graph):
         raise Forbidden("You cannot run this graph.")
-    ir, version = _ir_for(db, graph, use_published)
+    ir, version = _ir_for(db, graph, use_published, version)
     run_input = run_input or {}
     run = RunRecord(
         graph_id=graph.id,
@@ -92,6 +101,7 @@ async def start_run(
         input=run_input,
         graph_version=version,
         trigger_kind=trigger_kind,
+        retry_of_run_id=retry_of,
     )
     db.add(run)
     db.commit()  # also releases the connection before the Temporal call below
@@ -133,8 +143,14 @@ def checkpoint_state(db: Session, workflow_id: str, state: dict[str, Any]) -> Ru
     run = db.scalar(select(RunRecord).where(RunRecord.workflow_id == workflow_id))
     if run is None:
         raise NotFound("Run not found.")
+    state = dict(state)
+    events = state.pop("events", None) or []
     if (run.state or {}).get("seq", 0) > state.get("seq", 0):
-        return run  # a newer save already landed (retries can arrive out of order)
+        # a newer save already landed (retries can arrive out of order); events are still
+        # stored because each one is de-duplicated by its own seq
+        if events:
+            ingest_events(db, run, events)
+        return run
     run.state = state
     status = state.get("status") or run.status
     run.status = status
@@ -144,7 +160,16 @@ def checkpoint_state(db: Session, workflow_id: str, state: dict[str, Any]) -> Ru
         run.error = state.get("error")
     if status in TERMINAL_STATUSES and run.finished_at is None:
         run.finished_at = now_utc()
-    db.commit()
+    if events:
+        ingest_events(db, run, events, commit=False)
+    db.commit()  # state + events in one transaction
+    return run
+
+
+def run_by_workflow_id(db: Session, workflow_id: str) -> RunRecord:
+    run = db.scalar(select(RunRecord).where(RunRecord.workflow_id == workflow_id))
+    if run is None:
+        raise NotFound("Run not found.")
     return run
 
 
@@ -173,7 +198,7 @@ async def get_run_status(db: Session, run: RunRecord) -> dict[str, Any]:
         "run_id": run.id,
         "status": status,
         "waiting_for": state.get("waiting_for"),
-        "usage": state.get("usage"),
+        "usage": {**(state.get("usage") or {}), "cost_usd": run_cost(db, run.id)} if state.get("usage") else None,
         "nodes": {k: v.get("status") for k, v in state.get("nodes", {}).items()},
         "error": run.error,
     }

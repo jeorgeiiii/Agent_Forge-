@@ -102,6 +102,7 @@ class RunRead(BaseModel):
     output: Any = None
     error: str | None = None
     finished_at: datetime | None = None
+    retry_of_run_id: int | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

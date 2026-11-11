@@ -19,7 +19,9 @@ _client: httpx.AsyncClient | None = None
 
 
 class InternalApiError(RuntimeError):
-    pass
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def is_configured() -> bool:
@@ -47,5 +49,6 @@ async def call(method: str, path: str, json: Any = None, timeout: float = 10) ->
     except httpx.HTTPError as error:
         raise InternalApiError(f"{method} {path} failed: {error}") from error
     if response.status_code >= 400:
-        raise InternalApiError(f"{method} {path} failed with {response.status_code}: {response.text[:300]}")
+        raise InternalApiError(f"{method} {path} failed with {response.status_code}: {response.text[:300]}",
+                               response.status_code)
     return response.json() if response.content else None

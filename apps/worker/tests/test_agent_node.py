@@ -14,7 +14,7 @@ from temporalio.testing import WorkflowEnvironment  # noqa: E402
 from temporalio.worker import Worker  # noqa: E402
 
 import activities  # noqa: E402
-from activities import checkpoint_state, execute_node, llm_chat  # noqa: E402
+from activities import checkpoint_state, emit_events, execute_node, llm_chat  # noqa: E402
 from agentforge_core.compiler import GraphValidationError, compile_graph  # noqa: E402
 from workflow import RunGraphWorkflow  # noqa: E402
 
@@ -83,7 +83,7 @@ async def run(graph, run_input):
     async with await WorkflowEnvironment.start_time_skipping() as env:
         queue = f"test-{uuid.uuid4()}"
         async with Worker(env.client, task_queue=queue, workflows=[RunGraphWorkflow],
-                          activities=[execute_node, llm_chat, checkpoint_state]):
+                          activities=[execute_node, llm_chat, emit_events, checkpoint_state]):
             handle = await env.client.start_workflow(
                 RunGraphWorkflow.execute_graph_workflow,
                 {"ir": compile_graph(graph), "input": run_input, "run": {}},

@@ -6,6 +6,7 @@ are active, and the run state is checkpointed to Postgres after every step.
 """
 
 import asyncio
+import hashlib
 import json
 from datetime import timedelta
 from typing import Any
@@ -15,9 +16,10 @@ from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError, ApplicationError, ChildWorkflowError
 
 with workflow.unsafe.imports_passed_through():
-    from activities import checkpoint_state, execute_node, fire_schedule_trigger, llm_chat
+    from activities import (checkpoint_state, emit_events, execute_node, fire_schedule_trigger, llm_chat,
+                            load_memory, save_memory)
     from agentforge_core.builtin_nodes import MAX_AGENT_DEPTH  # supervisor -> worker -> sub-worker
-    from agentforge_core.expressions import build_expression_context, render_parameter
+    from agentforge_core.expressions import ExpressionError, build_expression_context, render_parameter
     from agentforge_core.runtime import (
         final_output,
         new_run_state,
@@ -29,8 +31,11 @@ with workflow.unsafe.imports_passed_through():
 NODE_TIMEOUT = timedelta(seconds=45)
 DEFAULT_AGENT_STEPS = 8
 MAX_TOOL_RESULT_CHARS = 20_000
+DEFAULT_MEMORY_WINDOW = 10  # messages loaded for memory type "window"
+MAX_MEMORY_BUFFER = 200     # cap for memory type "buffer"
 CHECKPOINT_TIMEOUT = timedelta(seconds=5)
 CHECKPOINT_INTERVAL = timedelta(seconds=1)  # max one progress save per second per run
+EVENT_FLUSH_INTERVAL = timedelta(milliseconds=250)  # live events: at most 4 sends per second per producer
 MAX_PARALLEL = 10
 
 
@@ -41,6 +46,52 @@ def _error_message(error: BaseException) -> str:
     return getattr(cause, "message", None) or str(cause)
 
 
+class EventOutbox:
+    """Buffers run events and delivers them to the API.
+
+    ``source`` is "" for the run itself and the child workflow id for a sub-agent,
+    so every producer has its own seq space; the API de-duplicates on
+    (run, source, seq), which makes redelivery after a failure safe.
+    """
+
+    def __init__(self, run_workflow_id: str, source: str = "") -> None:
+        self.run_workflow_id = run_workflow_id
+        self.source = source
+        self.pending: list[dict[str, Any]] = []
+        self.seq = 0
+        self._last_flush = None
+
+    def add(self, type_: str, node_id: str | None = None, at: str | None = None, **data: Any) -> None:
+        self.seq += 1
+        self.pending.append({"seq": self.seq, "type": type_, "node_id": node_id,
+                             "at": at or workflow.now().isoformat(), "data": data})
+
+    def mark_delivered(self, sent: list[dict[str, Any]]) -> None:
+        done = {e["seq"] for e in sent}
+        self.pending = [e for e in self.pending if e["seq"] not in done]
+
+    async def flush(self, *, force: bool = False) -> bool:
+        """Send pending events now (throttled unless forced). Returns True if nothing is left."""
+        if not self.pending:
+            return True
+        now = workflow.now()
+        if not force and self._last_flush and now - self._last_flush < EVENT_FLUSH_INTERVAL:
+            return False
+        self._last_flush = now
+        sending = list(self.pending)
+        try:
+            await workflow.execute_activity(
+                emit_events, args=[self.run_workflow_id, self.source, sending],
+                start_to_close_timeout=timedelta(seconds=5),
+                retry_policy=RetryPolicy(maximum_attempts=3 if force else 1),
+            )
+        except ActivityError as error:
+            workflow.logger.warning("Event flush failed (will retry later): %s", _error_message(error))
+            return False
+        self.mark_delivered(sending)
+        return not self.pending
+
+
 @workflow.defn(name="RunGraphWorkflow")
 class RunGraphWorkflow:
     def __init__(self) -> None:
@@ -48,6 +99,11 @@ class RunGraphWorkflow:
         self._approvals: dict[str, dict[str, Any]] = {}
         self._workflow_id = ""
         self._last_checkpoint = None
+        self._outbox: EventOutbox | None = None
+
+    def _emit(self, type_: str, node_id: str | None = None, at: str | None = None, **data: Any) -> None:
+        """Record a run event; delivered with the next checkpoint or live flush."""
+        self._outbox.add(type_, node_id, at, **data)
 
     # ----- signals & queries ---------------------------------------------
     @workflow.signal(name="approval")
@@ -66,6 +122,7 @@ class RunGraphWorkflow:
         run_input = payload.get("input", {})
         meta = payload.get("run", {})
         self._workflow_id = workflow.info().workflow_id
+        self._outbox = EventOutbox(self._workflow_id)
         if payload.get("checkpoint"):  # resuming / retrying from a saved state
             self._state = payload["checkpoint"]
             self._state["status"] = "running"
@@ -77,6 +134,9 @@ class RunGraphWorkflow:
         try:
             # No save at start: the API already marked the run 'running'.
             self._last_checkpoint = workflow.now()
+            if "seq" in self._state:  # resumed run: keep event numbering monotonic
+                self._outbox.seq = int(self._state.get("event_seq", 0))
+            self._emit("run.started", nodes=len(ir["order"]), resumed=bool(payload.get("checkpoint")))
             for index in range(self._state.get("superstep", 0), len(ir["supersteps"])):
                 await self.execute_superstep(ir, ir["supersteps"][index], run_input, meta)
                 self._state["superstep"] = index + 1
@@ -85,13 +145,16 @@ class RunGraphWorkflow:
             self._state["output"] = final_output(ir, self._state)
         except asyncio.CancelledError:
             self._state["status"] = "cancelled"
+            self._emit("run.finished", status="cancelled", usage=self._state.get("usage"))
             await self._checkpoint(final=True)
             raise
         except _NodeFailed as failure:
             self._state["status"] = "failed"
             self._state["error"] = str(failure)
+            self._emit("run.finished", status="failed", error=str(failure), usage=self._state.get("usage"))
             await self._checkpoint(final=True)
             raise ApplicationError(str(failure), type="NodeFailed", non_retryable=True) from None
+        self._emit("run.finished", status="success", usage=self._state.get("usage"))
         await self._checkpoint(final=True)
         return {
             "status": "success",
@@ -114,9 +177,12 @@ class RunGraphWorkflow:
         resolved = resolve_inputs_for_node(ir, node_id, self._state, run_input)
         if not resolved["active"]:
             nodes_state[node_id] = {"status": "skipped", "outputs": {}}
+            self._emit("node.skipped", node_id, label=node.get("label"))
             return
-        info: dict[str, Any] = {"status": "running", "started_at": workflow.now().isoformat()}
+        started = workflow.now()
+        info: dict[str, Any] = {"status": "running", "started_at": started.isoformat()}
         nodes_state[node_id] = info
+        self._emit("node.started", node_id, node_type=node["type"], label=node.get("label"))
         try:
             if node["type"] == "wait":
                 info["outputs"] = await self._wait(node, resolved["input"])
@@ -137,7 +203,10 @@ class RunGraphWorkflow:
                 info["status"] = "failed"
                 raise _NodeFailed(f"Node '{node.get('label') or node_id}' failed: {info['error']}") from None
         finally:
-            info["finished_at"] = workflow.now().isoformat()
+            finished = workflow.now()
+            info["finished_at"] = finished.isoformat()
+            self._emit("node.finished", node_id, status=info["status"], error=info.get("error"),
+                       duration_ms=round((finished - started).total_seconds() * 1000), usage=info.get("usage"))
 
     # ----- agent node --------------------------------------------------------
     async def run_agent(self, ir, node, resolved, run_input, meta, info) -> dict[str, Any]:
@@ -152,8 +221,12 @@ class RunGraphWorkflow:
             labels=labels,
             meta=meta,
             id_prefix=f"{self._workflow_id}/{node['id']}",
+            memory_scope=node["id"],
             on_usage=self._add_usage,
             on_step=self._checkpoint,  # progress is visible in the run while the agent works
+            on_event=self._emit,
+            on_flush=self._outbox.flush,  # live view: deliver events right after each LLM call
+            run_workflow_id=self._workflow_id,
         )
         info["agent"] = {"steps": loop.trace, "usage": loop.usage}
         return {"main": await loop.run()}
@@ -201,6 +274,7 @@ class RunGraphWorkflow:
         self._state["status"] = "paused"
         self._state["nodes"][node_id]["status"] = "waiting"
         self._state["waiting_for"] = {"node_id": node_id, "message": node["config"].get("message", "")}
+        self._emit("run.paused", node_id, message=node["config"].get("message", ""))
         await self._checkpoint(force=True)  # the UI must see 'paused' right away
         timeout = node["config"].get("timeout_seconds")
         try:
@@ -213,6 +287,7 @@ class RunGraphWorkflow:
             decision = {"approved": False, "comment": "Approval timed out."}
         self._state["status"] = "running"
         self._state.pop("waiting_for", None)
+        self._emit("run.resumed", node_id, approved=bool(decision.get("approved")), comment=decision.get("comment"))
         payload = {"input": value, "decision": decision}
         return {"approved": payload} if decision.get("approved") else {"rejected": payload}
 
@@ -229,6 +304,8 @@ class RunGraphWorkflow:
             return
         self._last_checkpoint = now
         self._state["seq"] = self._state.get("seq", 0) + 1
+        self._state["event_seq"] = self._outbox.seq
+        sending = list(self._outbox.pending)
         policy = (
             RetryPolicy(maximum_attempts=20, initial_interval=timedelta(seconds=1),
                         backoff_coefficient=2.0, maximum_interval=timedelta(seconds=30))
@@ -237,11 +314,12 @@ class RunGraphWorkflow:
         try:
             await workflow.execute_activity(
                 checkpoint_state,
-                args=[self._workflow_id, self._state],
+                args=[self._workflow_id, {**self._state, "events": sending}],
                 start_to_close_timeout=CHECKPOINT_TIMEOUT,
                 retry_policy=policy,
             )
-        except ActivityError as error:
+            self._outbox.mark_delivered(sending)
+        except ActivityError as error:  # events stay queued for the next checkpoint
             workflow.logger.warning("Checkpoint failed: %s", _error_message(error))
 
 
@@ -255,8 +333,14 @@ class AgentLoop:
     """
 
     def __init__(self, config, *, depth, current_input, run_input, node_outputs, labels, meta,
-                 id_prefix, on_usage=None, on_step=None):
+                 id_prefix, memory_scope="agent", on_usage=None, on_step=None, on_event=None, on_flush=None,
+                 run_workflow_id=""):
         self.config = config
+        self.on_event = on_event
+        self.on_flush = on_flush
+        self.run_workflow_id = run_workflow_id  # the RunGraphWorkflow whose event log everything goes to
+        self.memory_scope = memory_scope  # stable path like "boss/researcher" (not the per-run workflow id)
+        self.memory_note: str | None = None
         self.depth = depth
         self.run_input = run_input
         self.node_outputs = node_outputs
@@ -273,6 +357,10 @@ class AgentLoop:
             tool_args=current_input if isinstance(current_input, dict) else None,
         )
 
+    def _event(self, type_: str, **data: Any) -> None:
+        if self.on_event:
+            self.on_event(type_, self.memory_scope, **data)
+
     def _charge(self, usage: dict[str, int] | None) -> None:
         if not usage:
             return
@@ -281,12 +369,57 @@ class AgentLoop:
         if self.on_usage:
             self.on_usage(usage)
 
+    # ----- memory ----------------------------------------------------------
+    def _memory_key(self) -> str | None:
+        """Opaque key for this agent's conversation, or None when memory is off.
+
+        Scoped by graph + agent path + session so different graphs/agents never
+        share a conversation; hashed so it always fits the DB column.
+        """
+        memory = self.config.get("memory") or {}
+        if memory.get("type", "none") == "none":
+            return None
+        try:
+            session = render_parameter(memory.get("session_id") or "{{ $trigger.session_id }}", self.context)
+        except ExpressionError:
+            session = None
+        if session in (None, ""):
+            self.memory_note = "memory skipped: no session_id for this run"
+            return None
+        scope = f"{self.meta.get('graph_id', 'local')}|{self.memory_scope}|{session}"
+        return "mem:" + hashlib.sha256(scope.encode("utf-8")).hexdigest()[:40]
+
+    async def _load_history(self, key: str) -> list[dict[str, Any]]:
+        memory = self.config["memory"]
+        limit = int(memory.get("window", DEFAULT_MEMORY_WINDOW)) if memory["type"] == "window" else MAX_MEMORY_BUFFER
+        try:
+            return await workflow.execute_activity(
+                load_memory, args=[key, limit], start_to_close_timeout=timedelta(seconds=10),
+                retry_policy=RetryPolicy(maximum_attempts=3),
+            )
+        except ActivityError as error:  # memory is best-effort: answer without it rather than fail
+            self.memory_note = f"memory unavailable: {_error_message(error)}"
+            return []
+
+    async def _save_exchange(self, key: str, user_text: str, answer: str) -> None:
+        try:
+            await workflow.execute_activity(
+                save_memory, args=[key, [{"role": "user", "content": user_text}, {"role": "assistant", "content": answer}]],
+                start_to_close_timeout=timedelta(seconds=10), retry_policy=RetryPolicy(maximum_attempts=5),
+            )
+        except ActivityError as error:
+            self.memory_note = f"memory not saved: {_error_message(error)}"
+
     async def run(self) -> dict[str, Any]:
         config = self.config
         messages: list[dict[str, Any]] = []
         if config.get("system"):
             messages.append({"role": "system", "content": str(render_parameter(config["system"], self.context))})
-        messages.append({"role": "user", "content": str(render_parameter(config["prompt"], self.context))})
+        user_text = str(render_parameter(config["prompt"], self.context))
+        memory_key = self._memory_key()
+        history = await self._load_history(memory_key) if memory_key else []
+        messages.extend(history)
+        messages.append({"role": "user", "content": user_text})
         tools = {t["name"]: t for t in config.get("tools") or []}
         tool_defs = [
             {"type": "function", "function": {
@@ -301,6 +434,7 @@ class AgentLoop:
         text, stopped = "", "max_steps"
 
         for step in range(1, max_steps + 1):
+            asked_at = workflow.now()
             reply = await workflow.execute_activity(
                 llm_chat,
                 {
@@ -321,6 +455,17 @@ class AgentLoop:
             messages.append(message)
             text = message.get("content") or ""
             calls = message.get("tool_calls") or []
+            self._event(
+                "llm.call", step=step, depth=self.depth, model=reply.get("model") or config["model"],
+                input_tokens=reply["usage"].get("input_tokens", 0), output_tokens=reply["usage"].get("output_tokens", 0),
+                latency_ms=round((workflow.now() - asked_at).total_seconds() * 1000),
+                finish_reason=reply.get("finish_reason"),
+                tool_calls=[c.get("function", {}).get("name") for c in calls],
+                prompt_preview=_preview(messages[-2].get("content") if len(messages) > 1 else ""),
+                response_preview=_preview(text),
+            )
+            if self.on_flush:  # show this step before (possibly slow) tool calls start
+                await self.on_flush()
             self.trace.append({"step": step, "tool_calls": [c.get("function", {}).get("name") for c in calls]})
             if not calls:
                 stopped = "final"
@@ -334,6 +479,10 @@ class AgentLoop:
                 await self.on_step()
 
         output: dict[str, Any] = {"text": text, "stopped_reason": stopped, "steps": len(self.trace), "usage": self.usage}
+        if memory_key and text:
+            await self._save_exchange(memory_key, user_text, text)
+        if memory_key or self.memory_note:
+            output["memory"] = {"loaded_messages": len(history), **({"note": self.memory_note} if self.memory_note else {})}
         if config.get("json_output") and stopped == "final":
             try:
                 output["json"] = json.loads(text)
@@ -346,6 +495,8 @@ class AgentLoop:
         call_id = call.get("id", "") or f"s{step}"
         name = call.get("function", {}).get("name", "")
         tool = tools.get(name)
+        called_at = workflow.now()
+        ok, error_text = True, None
         try:
             if tool is None:
                 raise ValueError(f"Unknown tool '{name}'.")
@@ -373,7 +524,12 @@ class AgentLoop:
                 self._charge(result.get("usage"))
                 content = json.dumps(primary_output(result["outputs"]), default=str)
         except (ActivityError, ChildWorkflowError, ApplicationError, ValueError, json.JSONDecodeError) as error:
-            content = json.dumps({"error": _error_message(error)})
+            ok, error_text = False, _error_message(error)
+            content = json.dumps({"error": error_text})
+        self._event("tool.call", tool=name, step=step, ok=ok, error=error_text,
+                    kind=(tool or {}).get("node", {}).get("type"),
+                    duration_ms=round((workflow.now() - called_at).total_seconds() * 1000),
+                    result_preview=_preview(content))
         return {"role": "tool", "tool_call_id": call_id, "content": content[:MAX_TOOL_RESULT_CHARS]}
 
     async def _run_sub_agent(self, name, call_id, config, arguments) -> str:
@@ -390,11 +546,23 @@ class AgentLoop:
                 "node_outputs": self.node_outputs,
                 "labels": self.labels,
                 "run": self.meta,
+                "memory_scope": f"{self.memory_scope}/{name}",
+                "run_workflow_id": self.run_workflow_id,
             },
             id=f"{self.id_prefix}/{name}-{call_id}",
             execution_timeout=timedelta(minutes=15),  # never outlive the step waiting for it
         )
         self._charge(result.get("usage"))
+        undelivered = result.get("undelivered_events") or []
+        if undelivered and self.run_workflow_id:  # the sub-agent could not deliver them itself: try once more
+            try:
+                await workflow.execute_activity(
+                    emit_events, args=[self.run_workflow_id, result.get("event_source", ""), undelivered],
+                    start_to_close_timeout=timedelta(seconds=5), retry_policy=RetryPolicy(maximum_attempts=3))
+            except ActivityError as error:
+                workflow.logger.warning("Sub-agent events lost: %s", _error_message(error))
+        self._event("subagent.finished", tool=name, steps=result.get("steps"),
+                    stopped_reason=result.get("stopped_reason"), usage=result.get("usage"))
         self.trace[-1].setdefault("sub_agents", []).append(
             {"tool": name, "steps": result.get("steps"), "stopped_reason": result.get("stopped_reason"),
              "usage": result.get("usage")}
@@ -405,6 +573,11 @@ class AgentLoop:
         if result.get("stopped_reason") != "final":
             answer["note"] = f"sub-agent stopped early ({result.get('stopped_reason')})"
         return json.dumps(answer, default=str)
+
+
+def _preview(value: Any, limit: int = 500) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, default=str)
+    return text if len(text) <= limit else text[:limit] + "..."
 
 
 def _default_tool_parameters(tool: dict[str, Any]) -> dict[str, Any]:
@@ -421,6 +594,7 @@ class AgentWorkflow:
 
     def __init__(self) -> None:
         self._loop: AgentLoop | None = None
+        self._outbox: EventOutbox | None = None
 
     @workflow.query(name="trace")
     def get_trace(self) -> dict[str, Any]:
@@ -428,6 +602,8 @@ class AgentWorkflow:
 
     @workflow.run
     async def run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        run_workflow_id = payload.get("run_workflow_id") or ""
+        self._outbox = EventOutbox(run_workflow_id, source=workflow.info().workflow_id)
         self._loop = AgentLoop(
             payload["config"],
             depth=int(payload["depth"]),
@@ -437,9 +613,18 @@ class AgentWorkflow:
             labels=payload.get("labels") or {},
             meta=payload.get("run") or {},
             id_prefix=workflow.info().workflow_id,
+            memory_scope=payload.get("memory_scope", "sub-agent"),
+            on_event=self._outbox.add,
+            on_flush=self._outbox.flush if run_workflow_id else None,
+            run_workflow_id=run_workflow_id,
         )
         output = await self._loop.run()
         output["trace"] = self._loop.trace
+        if run_workflow_id:
+            await self._outbox.flush(force=True)
+        if self._outbox.pending:  # could not deliver: hand them to the parent as a fallback
+            output["undelivered_events"] = self._outbox.pending
+            output["event_source"] = self._outbox.source
         return output
 
 
