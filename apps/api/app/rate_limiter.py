@@ -32,6 +32,7 @@ class RedisRateLimiter:
         self._redis_available: bool | None = None
         # In-memory fallback: dict of client_key -> list of timestamps
         self._memory_cache: dict[str, list[float]] = defaultdict(list)
+        self._memory_counters: dict[str, tuple[int, float]] = {}  # key -> (value, expires_at)
 
     async def get_redis(self) -> aioredis.Redis | None:
         if self._redis_available is False:
@@ -64,14 +65,21 @@ class RedisRateLimiter:
         endpoint: str,
         max_requests: int,
         window_seconds: int,
+        *,
+        strict: bool = False,
     ) -> tuple[bool, int, int]:
         """Check if request is within rate limits.
 
         Returns: (allowed, remaining, retry_after)
+        strict=True: if RATE_LIMIT_FAIL_CLOSED is set and Redis is down, refuse instead of
+        falling back to the per-process memory counter (use for logins in production).
         """
         now = time.time()
         key = f"ratelimit:{identifier}:{endpoint}"
         client = await self.get_redis()
+        if client is None and strict and get_settings().rate_limit_fail_closed:
+            raise HTTPException(status_code=503, detail="Rate limiting is unavailable; please retry shortly.",
+                                headers={"Retry-After": "5"})
 
         if client is not None:
             try:
@@ -108,6 +116,38 @@ class RedisRateLimiter:
         return allowed, remaining, max(1, retry_after)
 
 
+    # ---- counters (cluster 13 quotas): fixed windows, shared across API processes via Redis
+    async def incr_counter(self, key: str, amount: int, ttl_seconds: int) -> int:
+        client = await self.get_redis()
+        if client is not None:
+            try:
+                pipeline = client.pipeline()
+                pipeline.incrby(key, amount)
+                pipeline.expire(key, ttl_seconds)
+                return int((await pipeline.execute())[0])
+            except Exception:
+                pass
+        value, expires = self._memory_counters.get(key, (0, 0.0))
+        if expires < time.time():
+            value = 0
+        self._memory_counters[key] = (value + amount, time.time() + ttl_seconds)
+        return value + amount
+
+    async def get_counter(self, key: str) -> int:
+        client = await self.get_redis()
+        if client is not None:
+            try:
+                return int(await client.get(key) or 0)
+            except Exception:
+                pass
+        value, expires = self._memory_counters.get(key, (0, 0.0))
+        return value if expires >= time.time() else 0
+
+    @property
+    def backend(self) -> str:
+        return "redis" if self._redis_available else "memory"
+
+
 # Singleton instance
 limiter = RedisRateLimiter()
 
@@ -128,9 +168,10 @@ def client_ip(request: Request) -> str:
     return peer
 
 
-async def enforce_limit(key: str, endpoint: str, max_requests: int, window_seconds: int) -> None:
+async def enforce_limit(key: str, endpoint: str, max_requests: int, window_seconds: int, *, strict: bool = False) -> None:
     """Rate-limit on an arbitrary key (e.g. the email being logged into)."""
-    allowed, _remaining, retry_after = await limiter.check_rate_limit(key, endpoint, max_requests, window_seconds)
+    allowed, _remaining, retry_after = await limiter.check_rate_limit(key, endpoint, max_requests, window_seconds,
+                                                                      strict=strict)
     if not allowed:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -139,7 +180,7 @@ async def enforce_limit(key: str, endpoint: str, max_requests: int, window_secon
         )
 
 
-def rate_limit(max_requests: int = 20, window_seconds: int = 60) -> Callable:
+def rate_limit(max_requests: int = 20, window_seconds: int = 60, *, strict: bool = False) -> Callable:
     """FastAPI route dependency to enforce sliding-window rate limiting."""
 
     async def dependency(request: Request, response: Response):
@@ -150,18 +191,26 @@ def rate_limit(max_requests: int = 20, window_seconds: int = 60) -> Callable:
             endpoint=endpoint,
             max_requests=max_requests,
             window_seconds=window_seconds,
+            strict=strict,
         )
 
         response.headers["X-RateLimit-Limit"] = str(max_requests)
         response.headers["X-RateLimit-Remaining"] = str(remaining)
         response.headers["X-RateLimit-Window"] = f"{window_seconds}s"
+        # IETF httpapi "RateLimit header fields" (widely adopted RateLimit-* form)
+        response.headers["RateLimit-Limit"] = str(max_requests)
+        response.headers["RateLimit-Remaining"] = str(remaining)
+        response.headers["RateLimit-Reset"] = str(retry_after or window_seconds)
+        response.headers["RateLimit-Policy"] = f"{max_requests};w={window_seconds}"
 
         if not allowed:
             response.headers["Retry-After"] = str(retry_after)
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail=f"Rate limit exceeded: maximum {max_requests} requests per {window_seconds}s. Please retry in {retry_after} seconds.",
-                headers={"Retry-After": str(retry_after)},
+                headers={"Retry-After": str(retry_after), "RateLimit-Limit": str(max_requests),
+                         "RateLimit-Remaining": "0", "RateLimit-Reset": str(retry_after),
+                         "RateLimit-Policy": f"{max_requests};w={window_seconds}"},
             )
 
     return dependency

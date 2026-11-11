@@ -214,6 +214,19 @@ def _llm_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=LLM_TIMEOUT_SECONDS, follow_redirects=False, trust_env=False)
 
 
+async def ensure_llm_quota(workflow_id: str) -> None:
+    """Cluster 13: stop before spending tokens the workspace no longer has (non-retryable)."""
+    if not workflow_id or not api_client.is_configured():
+        return
+    try:
+        verdict = await api_client.call("GET", f"/internal/quota/llm?workflow_id={workflow_id}")
+    except api_client.InternalApiError as error:  # quota service down: allow, but say so
+        log.warning("LLM quota check unavailable: %s", error)
+        return
+    if verdict and not verdict.get("allowed", True):
+        raise ApplicationError(verdict.get("reason") or "LLM quota exceeded.", type="QuotaExceeded", non_retryable=True)
+
+
 class LLMProviderError(RuntimeError):
     """Transient provider failure (429 / 5xx / network) - Temporal may retry it."""
 
@@ -280,6 +293,7 @@ async def _llm(ctx: NodeContext) -> dict[str, Any]:
     messages.append({"role": "user", "content": str(ctx.param("prompt", ""))})
     rendered = {k: ctx.param(k) for k in ("temperature", "max_tokens") if config.get(k) is not None}
     body = _sampling({**rendered, "json_output": config.get("json_output")}, {"model": str(ctx.param("model")), "messages": messages})
+    await ensure_llm_quota(ctx.workflow_id)
     choice, ctx.usage = await chat_completion(config.get("credential_id"), ctx.param("base_url"), body)
     text = choice["message"].get("content") or ""
     result: dict[str, Any] = {
@@ -318,6 +332,9 @@ async def execute_node(request: dict[str, Any]) -> dict[str, Any]:
     """Run one node with its resolved inputs; returns outputs and timing."""
     ctx = NodeContext(request)
     started = time.perf_counter()
+    log.info("node %s (%s) started", ctx.node.get("id"), ctx.node.get("type"),
+             extra={"request_id": (request.get("run") or {}).get("request_id"), "workflow_id": ctx.workflow_id,
+                    "node_id": ctx.node.get("id")})
     try:
         executor = get_node_executor(ctx.node["type"])
         outputs = await executor(ctx)
@@ -340,6 +357,7 @@ async def llm_chat(request: dict[str, Any]) -> dict[str, Any]:
     if request.get("tools"):
         body["tools"] = request["tools"]
     _sampling(request, body)
+    await ensure_llm_quota(request.get("workflow_id", ""))
     try:
         choice, usage = await chat_completion(request.get("credential_id"), request.get("base_url"), body)
     except ValueError as error:

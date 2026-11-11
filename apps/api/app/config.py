@@ -7,6 +7,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = "sqlite:///./agentforge.db"
+    log_format: str = "text"  # text | json (structured logs for log pipelines)
+    log_level: str = "INFO"
+    db_auto_migrate: bool = True  # run Alembic migrations at startup (turn off if you migrate in CI/CD)
     db_pool_size: int = 20
     db_max_overflow: int = 30
     # Only these direct peers may set X-Forwarded-For (comma-separated IPs/hostnames
@@ -31,6 +34,13 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_ssl: bool = False  # true = implicit TLS (port 465); false = STARTTLS
     smtp_starttls: bool = True  # upgrade plain connections with STARTTLS (turn off only for local test servers)
+
+    # --- Rate limits & quotas (cluster 13); 0 = unlimited. Operators override per workspace. ---
+    rate_limit_fail_closed: bool = False         # production: refuse logins when Redis is down
+    workspace_max_concurrent_runs: int = 20      # queued + running at the same time
+    workspace_runs_per_day: int = 0
+    workspace_tokens_per_minute: int = 0         # LLM input+output tokens
+    workspace_tokens_per_day: int = 0
 
     # --- Files (cluster 19) ---
     storage_backend: str = "local"           # local | s3 (AWS S3, Cloudflare R2, MinIO, ...)

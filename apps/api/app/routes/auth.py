@@ -39,7 +39,7 @@ def _login_response(db: Session, request: Request, response: Response, user: Use
 
 
 @router.post("/signup", response_model=LoginResponse, status_code=status.HTTP_201_CREATED,
-             dependencies=[Depends(rate_limit(max_requests=5, window_seconds=60))])
+             dependencies=[Depends(rate_limit(max_requests=5, window_seconds=60, strict=True))])
 def signup(payload: SignupRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     user = auth.create_user(db, payload.email, payload.password, payload.name)
     audit(request, db, "auth.signup", user=user, resource_type="user", resource_id=user.id)
@@ -47,10 +47,10 @@ def signup(payload: SignupRequest, request: Request, response: Response, db: Ses
 
 
 @router.post("/login", response_model=LoginResponse,
-             dependencies=[Depends(rate_limit(max_requests=10, window_seconds=60))])
+             dependencies=[Depends(rate_limit(max_requests=10, window_seconds=60, strict=True))])
 async def login(payload: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     # Per-account limit too: stops slow password guessing spread over many IPs.
-    await enforce_limit(f"email:{payload.email.strip().lower()}", "login", max_requests=10, window_seconds=300)
+    await enforce_limit(f"email:{payload.email.strip().lower()}", "login", max_requests=10, window_seconds=300, strict=True)
     result = await run_in_threadpool(auth.check_login, db, payload.email, payload.password)  # scrypt is CPU-bound
     if not result.success or result.user is None:
         # failed logins are security-relevant: record the attempted email (never the password)

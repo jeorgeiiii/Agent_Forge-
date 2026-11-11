@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from ..models import AuditChainHead, AuditEventRecord, UserRecord
 from .authz import require_role
 from .common import ServiceError, now_utc
+from ..utils import paginate
 
 log = logging.getLogger("agentforge.audit")
 GENESIS = "0" * 64
@@ -221,9 +222,8 @@ def list_audit_events(
         if get_settings().auth_required:
             raise ServiceError("Sign in to read the audit log.", 401)
         query = _query(None, **filters).where(AuditEventRecord.chain == "global")  # single-user mode
-    limit = max(1, min(limit, 500))
-    rows = list(db.scalars(query.order_by(AuditEventRecord.id.desc()).limit(limit + 1)))
-    return rows[:limit], (rows[limit - 1].id if len(rows) > limit else None)
+    # _query already applied the before_id cursor filter
+    return paginate(db, query, AuditEventRecord.id, before_id=None, limit=limit)
 
 
 def event_to_dict(event: AuditEventRecord) -> dict[str, Any]:

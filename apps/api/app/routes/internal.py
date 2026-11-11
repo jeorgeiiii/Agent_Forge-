@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..deps import get_db, require_internal_token
 from ..config import get_settings
-from ..services import credentials, events, files, memory, runs, triggers
+from ..services import credentials, events, files, memory, quotas, runs, triggers
 from ..services.common import ServiceError
 
 router = APIRouter(prefix="/internal", tags=["internal"], dependencies=[Depends(require_internal_token)], include_in_schema=False)
@@ -26,6 +26,12 @@ def events_append(workflow_id: str, payload: dict[str, Any] = Body(...), db: Ses
     run = runs.run_by_workflow_id(db, workflow_id)
     added = events.ingest_events(db, run, payload.get("events") or [], source=str(payload.get("source") or ""))
     return {"added": added}
+
+
+@router.get("/quota/llm")
+def llm_quota(workflow_id: str, db: Session = Depends(get_db)):
+    """Worker asks before each LLM call: may this run spend more tokens right now?"""
+    return quotas.check_llm_quota(db, workflow_id)
 
 
 @router.post("/files")

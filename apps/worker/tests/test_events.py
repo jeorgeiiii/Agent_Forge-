@@ -42,6 +42,8 @@ def api(monkeypatch):
             return None
         if path.startswith("/internal/credentials/"):
             return {"type": "api_key", "data": {"api_key": "k"}}
+        if path.startswith("/internal/quota/"):
+            return {"allowed": True, "reason": ""}
         raise AssertionError(path)
 
     async def public_ok(url):

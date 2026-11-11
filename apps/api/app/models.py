@@ -82,6 +82,8 @@ class WorkspaceRecord(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     # Cluster 18: per-workspace overrides of the retention defaults (None = use defaults)
     retention: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
+    # Cluster 13: operator-set quota overrides (None = platform defaults)
+    limits: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
     # Cluster 16: soft delete (restorable until retention purges it)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

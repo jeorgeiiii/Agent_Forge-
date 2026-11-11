@@ -21,6 +21,7 @@ from ..models import GraphRecord, RunEventRecord, RunRecord
 from .common import NotFound, ServiceError, as_utc
 from .events import run_cost
 from .graphs import list_graphs_for_workspace
+from ..utils import paginate
 
 RETRYABLE_STATUSES = {"failed", "cancelled"}
 
@@ -52,11 +53,7 @@ def list_runs_for_graph(
         query = query.where(RunRecord.created_at >= since)
     if until:
         query = query.where(RunRecord.created_at < until)
-    if before_id:
-        query = query.where(RunRecord.id < before_id)
-    rows = list(db.scalars(query.order_by(RunRecord.id.desc()).limit(limit + 1)))
-    next_cursor = rows[limit - 1].id if len(rows) > limit else None
-    return rows[:limit], next_cursor
+    return paginate(db, query, RunRecord.id, before_id=before_id, limit=limit, max_limit=200)
 
 
 # --------------------------------------------------------------------------- #

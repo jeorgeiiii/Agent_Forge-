@@ -511,6 +511,7 @@ class AgentLoop:
                     "temperature": config.get("temperature"),
                     "max_tokens": config.get("max_tokens"),
                     "json_output": config.get("json_output") and not tool_defs,
+                    "workflow_id": self.run_workflow_id or self.meta.get("workflow_id", ""),
                 },
                 start_to_close_timeout=timedelta(seconds=90),
                 retry_policy=RetryPolicy(maximum_attempts=3, initial_interval=timedelta(seconds=2), backoff_coefficient=2.0),

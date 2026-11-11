@@ -22,6 +22,8 @@ from ..models import GraphRecord, RunRecord
 from .authz import can_user_edit_graph, can_user_view_graph
 from .common import Forbidden, NotFound, ServiceError, now_utc
 from .events import ingest_events, run_cost
+from .quotas import check_run_quota
+from ..utils import current_request_id
 from .graphs import get_latest_version_of_graph, get_published_version, get_version
 
 TERMINAL_STATUSES = {"success", "failed", "cancelled"}
@@ -92,6 +94,7 @@ async def start_run(
     """Create a run row and start the Temporal workflow. Returns immediately."""
     if check_access and not can_user_edit_graph(db, user_id, graph):
         raise Forbidden("You cannot run this graph.")
+    check_run_quota(db, graph)  # cluster 13: concurrent runs / runs per day / tokens per day
     ir, version = _ir_for(db, graph, use_published, version)
     run_input = run_input or {}
     run = RunRecord(
@@ -109,7 +112,8 @@ async def start_run(
     payload = {
         "ir": ir,
         "input": run_input,
-        "run": {"id": run.id, "graph_id": graph.id, "workflow_id": run.workflow_id, "trigger": trigger_kind},
+        "run": {"id": run.id, "graph_id": graph.id, "workflow_id": run.workflow_id, "trigger": trigger_kind,
+                "request_id": current_request_id()},
         "checkpoint": checkpoint,
     }
     try:

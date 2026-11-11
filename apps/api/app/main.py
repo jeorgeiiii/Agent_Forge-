@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from .config import get_settings
 from .db import SessionLocal, initialize_database
@@ -27,6 +28,7 @@ from .routes import (
     workspaces,
 )
 from .services.common import ServiceError
+from .utils import Timer, accept_request_id, configure_logging, log_structured_event, request_id_var
 
 
 log = logging.getLogger("agentforge")
@@ -76,6 +78,7 @@ async def lifespan(_app: FastAPI):
 
 
 settings = get_settings()
+configure_logging(settings.log_format, settings.log_level)
 app = FastAPI(title="AgentForge API", version="0.2.0", lifespan=lifespan)
 
 app.add_middleware(
@@ -85,6 +88,44 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def request_context(request: Request, call_next):
+    """Request id for every request (+ X-Request-ID response header) and one structured access-log line."""
+    request_id = accept_request_id(request.headers.get("x-request-id"))
+    token = request_id_var.set(request_id)
+    status = 500
+    try:
+        with Timer() as timer:
+            response = await call_next(request)
+            status = response.status_code
+        response.headers["X-Request-ID"] = request_id
+        return response
+    finally:
+        user = getattr(request.state, "user", None)
+        log_structured_event(
+            logging.getLogger("agentforge.access"), "request", method=request.method, path=request.url.path,
+            status=status, duration_ms=getattr(timer, "ms", None) if "timer" in locals() else None,
+            user_id=getattr(user, "id", None), ip=request.client.host if request.client else None)
+        request_id_var.reset(token)
+
+
+@app.exception_handler(IntegrityError)
+async def integrity_error_handler(_request: Request, error: IntegrityError) -> JSONResponse:
+    """handle_db_error: a unique/foreign-key conflict is the client's problem, not a crash."""
+    log.warning("Database conflict: %s", str(error.orig)[:300])
+    return JSONResponse(status_code=409, content={"detail": "This conflicts with existing data (it may already exist).",
+                                                  "request_id": request_id_var.get()})
+
+
+@app.exception_handler(OperationalError)
+async def operational_error_handler(_request: Request, error: OperationalError) -> JSONResponse:
+    """handle_db_error: database busy/unreachable -> 503 + Retry-After instead of a bare 500."""
+    log.error("Database unavailable: %s", str(error.orig)[:300])
+    return JSONResponse(status_code=503, headers={"Retry-After": "2"},
+                        content={"detail": "The database is busy or unavailable. Please retry.",
+                                 "request_id": request_id_var.get()})
 
 
 @app.exception_handler(ServiceError)
@@ -103,6 +144,7 @@ for router in (
     retention.router,
     memory.router,
     usage.router,
+    usage.limits_router,
     node_types.router,
     credentials.router,
     files.router,
