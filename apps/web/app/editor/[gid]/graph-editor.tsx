@@ -379,8 +379,10 @@ Example: ${help(spec.type).example}`}>
                       title={BUTTON_HELP.run}>▶ Run</button>
               <Link className="ge-secondary" href={`/graphs/${graphId}/runs`} title={BUTTON_HELP.history}>Run history</Link>
             </div>
+            <Link className="ge-secondary ge-full" href={`/graphs/${graphId}/triggers`} title={BUTTON_HELP.triggers}>⚡ Publish &amp; triggers</Link>
             <small className="ge-btn-help"><strong>Run:</strong> {BUTTON_HELP.run}</small>
             <small className="ge-btn-help"><strong>Run history:</strong> {BUTTON_HELP.history}</small>
+            <small className="ge-btn-help"><strong>Publish &amp; triggers:</strong> {BUTTON_HELP.triggers}</small>
             {notice && <p role="status" className={`ge-notice ge-${notice.kind}`}>{notice.text}</p>}
           </div>
         </aside>

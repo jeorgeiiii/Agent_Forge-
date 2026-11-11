@@ -39,7 +39,12 @@ export default function SiteHeader() {
 
   return (
     <header className="header">
-      <Link href="/" className="brand">AgentForge</Link>
+      <nav className="main-nav" aria-label="Main">
+        <Link href="/" className="brand">AgentForge</Link>
+        <Link href="/" className={`nav-link${pathname === "/" ? " active" : ""}`}>Workflows</Link>
+        <Link href="/credentials" className={`nav-link${pathname === "/credentials" ? " active" : ""}`}>Saved keys</Link>
+        <Link href="/files" className={`nav-link${pathname === "/files" ? " active" : ""}`}>Files</Link>
+      </nav>
       <div className="header-right">
         {status === "signed-in" && user && (
           <>

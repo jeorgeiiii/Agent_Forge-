@@ -185,6 +185,7 @@ export const FIELD_HELP: Record<string, string> = {
 export const BUTTON_HELP = {
   save: "Saves your changes. Each save is kept as a version, so you can go back later.",
   run: "Saves, then tries the workflow once with information you type in. You'll see each step happen live.",
+  triggers: "Make the workflow live so it starts by itself - from another app, on a timetable, or from a chat.",
   history: "See every time this workflow ran - when, whether it worked, and what it cost.",
   newGraph: "Start a new workflow from a simple 3-block starter.",
   approve: "Say yes - the workflow continues down the \"approved\" path.",

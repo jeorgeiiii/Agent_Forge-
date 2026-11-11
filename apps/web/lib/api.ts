@@ -292,3 +292,58 @@ export const decideApproval = (graphId: number, runId: number, nodeId: string, a
   });
 /** Same-origin URL for EventSource (the Next proxy forwards it; the session cookie goes with it). */
 export const runEventsStreamUrl = (graphId: number, runId: number) => `/api/graphs/${graphId}/runs/${runId}/events/stream`;
+
+// ------------------------------------------------------------------ saved keys (credentials)
+
+export type CredentialType = "api_key" | "bearer" | "basic" | "header" | "oauth2" | "custom";
+export type Credential = CredentialSummary & { created_at: string; updated_at: string };
+
+/** Saves a new key. The secret is encrypted on the server and can never be read back by the browser. */
+export const createCredential = (body: { name: string; type: CredentialType; data: Record<string, unknown>; workspace_id?: number | null }) =>
+  request<Credential>("/credentials", { method: "POST", body: JSON.stringify(body) });
+/** Renames a key and/or replaces its secret (leave `data` out to keep the old secret). */
+export const updateCredential = (id: number, body: { name?: string; data?: Record<string, unknown> }) =>
+  request<Credential>(`/credentials/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+export const deleteCredential = (id: number) => request<void>(`/credentials/${id}`, { method: "DELETE" });
+
+// ------------------------------------------------------------------ triggers (how a workflow starts by itself)
+
+export type Trigger = { id: number; node_id: string; kind: string; active: boolean; url: string | null;
+  config: Record<string, unknown>; schedule_id: string | null };
+export type GraphStatus = Graph & { published_version?: number | null; is_active?: boolean };
+
+export const getGraphStatus = (id: number) => request<GraphStatus>(`/graphs/${id}`);
+export const listTriggers = (graphId: number) => request<Trigger[]>(`/graphs/${graphId}/triggers`);
+/** Publishing makes the latest saved version "live" and creates its web addresses / timetables. */
+export const publishGraph = (graphId: number) =>
+  request<{ published_version: number; triggers: Trigger[] }>(`/graphs/${graphId}/publish`, { method: "POST", body: "{}" });
+export const unpublishGraph = (graphId: number) => request<GraphStatus>(`/graphs/${graphId}/unpublish`, { method: "POST" });
+/** Turn the live triggers on or off without unpublishing. */
+export const setGraphActive = (graphId: number, active: boolean) =>
+  request<GraphStatus>(`/graphs/${graphId}/${active ? "activate" : "deactivate"}`, { method: "POST" });
+
+// ------------------------------------------------------------------ files
+
+export type StoredFile = { id: string; name: string; mime: string; size: number; status: string;
+  workspace_id: number | null; graph_id: number | null; run_id: number | null; created_at: string;
+  ref: Record<string, unknown> };
+
+export const listFiles = (workspaceId?: number | null) =>
+  request<StoredFile[]>(workspaceId ? `/files?workspace_id=${workspaceId}` : "/files");
+export const deleteFile = (id: string) => request<void>(`/files/${encodeURIComponent(id)}`, { method: "DELETE" });
+/** Where the browser downloads a file from (the session cookie proves access). */
+export const fileDownloadUrl = (id: string) => `/api/files/${encodeURIComponent(id)}/content`;
+
+/** Uploads one file. Uses FormData, so it skips the JSON helper (the browser sets the content type). */
+export async function uploadFile(file: File, workspaceId?: number | null): Promise<StoredFile> {
+  const form = new FormData();
+  form.append("file", file);
+  if (workspaceId) form.append("workspace_id", String(workspaceId));
+  const response = await fetch("/api/files", { method: "POST", body: form, credentials: "include" });
+  if (!response.ok) {
+    const body = await response.json().catch(() => undefined);
+    const detail = typeof body?.detail === "string" ? body.detail : body?.detail?.message;
+    throw new ApiError(detail ?? `Upload failed (${response.status}).`, response.status);
+  }
+  return response.json();
+}
