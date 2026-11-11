@@ -12,6 +12,7 @@ from ..deps import current_user_id, get_db
 from ..models import RunRecord
 from ..services import events
 from ..services import observability as obs
+from ..services.audit import audit
 from ..schemas import ApprovalDecision, RunCreate, RunDetail, RunRead
 from ..services import runs as svc
 from ..services.graphs import get_graph_by_id
@@ -22,10 +23,17 @@ HEARTBEAT_SECONDS = 15
 STREAM_MAX_SECONDS = 1800  # clients reconnect (with Last-Event-ID) after this
 
 
+def _audit(request: Request, db: Session, action: str, run, workspace_id, **details) -> None:
+    audit(request, db, action, resource_type="run", resource_id=run.id, workspace_id=workspace_id,
+          details={"graph_id": run.graph_id, **details})
+
+
 @router.post("", response_model=RunRead, status_code=status.HTTP_202_ACCEPTED)
-async def start_run(graph_id: int, payload: RunCreate, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
+async def start_run(graph_id: int, payload: RunCreate, request: Request, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
     graph = get_graph_by_id(db, user_id, graph_id)
-    return await svc.start_run(db, graph, payload.input, user_id=user_id, trigger_kind="manual")
+    run = await svc.start_run(db, graph, payload.input, user_id=user_id, trigger_kind="manual")
+    _audit(request, db, "run.start", run, graph.workspace_id)
+    return run
 
 
 @router.get("", response_model=list[RunRead])
@@ -62,9 +70,12 @@ def get_run_cost(graph_id: int, run_id: int, user_id: int | None = Depends(curre
 
 
 @router.post("/{run_id}/retry", response_model=RunRead, status_code=status.HTTP_202_ACCEPTED)
-async def retry_run(graph_id: int, run_id: int, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
+async def retry_run(graph_id: int, run_id: int, request: Request, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
     """New run of the same graph version that resumes from the node that failed."""
-    return await obs.retry_run(db, user_id, svc.get_run(db, user_id, graph_id, run_id))
+    old = svc.get_run(db, user_id, graph_id, run_id)
+    run = await obs.retry_run(db, user_id, old)
+    _audit(request, db, "run.retry", run, old.graph.workspace_id, retry_of=run_id)
+    return run
 
 
 @router.get("/{run_id}/trace")
@@ -146,14 +157,19 @@ async def _event_stream(run_id: int, last_id: int, request: Request):
 
 
 @router.post("/{run_id}/cancel", response_model=RunRead)
-async def cancel_run(graph_id: int, run_id: int, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
-    return await svc.cancel_run(db, user_id, svc.get_run(db, user_id, graph_id, run_id))
+async def cancel_run(graph_id: int, run_id: int, request: Request, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
+    run = await svc.cancel_run(db, user_id, svc.get_run(db, user_id, graph_id, run_id))
+    _audit(request, db, "run.cancel", run, run.graph.workspace_id)
+    return run
 
 
 @router.post("/{run_id}/approval", response_model=RunRead)
-async def approve(graph_id: int, run_id: int, payload: ApprovalDecision,
+async def approve(graph_id: int, run_id: int, payload: ApprovalDecision, request: Request,
                   user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
     run = svc.get_run(db, user_id, graph_id, run_id)
-    return await svc.resume_run_with_signal(
+    run = await svc.resume_run_with_signal(
         db, user_id, run, node_id=payload.node_id, approved=payload.approved, comment=payload.comment
     )
+    _audit(request, db, "run.approve" if payload.approved else "run.reject", run, run.graph.workspace_id,
+           node_id=payload.node_id, comment=payload.comment)
+    return run

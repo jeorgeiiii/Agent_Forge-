@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy.orm import Session
 
 from ..compiler import compile_graph
@@ -15,9 +15,15 @@ from ..schemas import (
 )
 from ..services import graphs as svc
 from ..services import triggers
+from ..services.audit import audit
 from ..services.common import ServiceError
 
 router = APIRouter(prefix="/graphs", tags=["graphs"])
+
+
+def _audit(request: Request, db: Session, action: str, graph, **details) -> None:
+    audit(request, db, action, resource_type="graph", resource_id=graph.id, workspace_id=graph.workspace_id,
+          details=details)
 
 
 def _trigger_read(trigger) -> TriggerRead:
@@ -38,9 +44,11 @@ def list_graphs(workspace_id: int | None = None, user_id: int | None = Depends(c
 
 
 @router.post("", response_model=GraphRead, status_code=status.HTTP_201_CREATED)
-def create_graph(payload: GraphCreate, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
+def create_graph(payload: GraphCreate, request: Request, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
     definition = payload.definition.model_dump(mode="json") if payload.definition else None
-    return svc.create_graph(db, user_id, payload.name, payload.description, definition, payload.workspace_id)
+    graph = svc.create_graph(db, user_id, payload.name, payload.description, definition, payload.workspace_id)
+    _audit(request, db, "graph.create", graph, name=graph.name)
+    return graph
 
 
 @router.get("/{graph_id}", response_model=GraphRead)
@@ -49,33 +57,42 @@ def get_graph(graph_id: int, user_id: int | None = Depends(current_user_id), db:
 
 
 @router.put("/{graph_id}", response_model=GraphRead)
-def update_graph(graph_id: int, payload: GraphUpdate, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
-    return svc.update_graph(
+def update_graph(graph_id: int, payload: GraphUpdate, request: Request, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
+    graph = svc.update_graph(
         db, user_id, graph_id,
         name=payload.name, description=payload.description, definition=payload.definition.model_dump(mode="json"),
     )
+    _audit(request, db, "graph.update", graph, version=graph.version, nodes=len(payload.definition.nodes))
+    return graph
 
 
 @router.delete("/{graph_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_graph(graph_id: int, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
+async def delete_graph(graph_id: int, request: Request, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
     graph = svc.delete_graph(db, user_id, graph_id)
     await triggers.deactivate_graph_triggers(db, graph)
+    _audit(request, db, "graph.delete", graph, name=graph.name)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/{graph_id}/restore", response_model=GraphRead)
-def restore_graph(graph_id: int, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
-    return svc.restore_graph(db, user_id, graph_id)
+def restore_graph(graph_id: int, request: Request, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
+    graph = svc.restore_graph(db, user_id, graph_id)
+    _audit(request, db, "graph.restore", graph)
+    return graph
 
 
 @router.post("/{graph_id}/duplicate", response_model=GraphRead, status_code=status.HTTP_201_CREATED)
-def duplicate_graph(graph_id: int, payload: GraphDuplicate, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
-    return svc.duplicate_graph(db, user_id, graph_id, payload.name)
+def duplicate_graph(graph_id: int, payload: GraphDuplicate, request: Request, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
+    graph = svc.duplicate_graph(db, user_id, graph_id, payload.name)
+    _audit(request, db, "graph.duplicate", graph, source_graph_id=graph_id)
+    return graph
 
 
 @router.patch("/{graph_id}/name", response_model=GraphRead)
-def rename_graph(graph_id: int, payload: GraphRename, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
-    return svc.rename_graph(db, user_id, graph_id, payload.name)
+def rename_graph(graph_id: int, payload: GraphRename, request: Request, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
+    graph = svc.rename_graph(db, user_id, graph_id, payload.name)
+    _audit(request, db, "graph.rename", graph, name=graph.name)
+    return graph
 
 
 @router.get("/{graph_id}/versions", response_model=list[GraphVersionRead])
@@ -84,8 +101,10 @@ def list_versions(graph_id: int, user_id: int | None = Depends(current_user_id),
 
 
 @router.post("/{graph_id}/versions/{version}/rollback", response_model=GraphRead)
-def rollback(graph_id: int, version: int, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
-    return svc.rollback_to_version(db, user_id, graph_id, version)
+def rollback(graph_id: int, version: int, request: Request, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
+    graph = svc.rollback_to_version(db, user_id, graph_id, version)
+    _audit(request, db, "graph.rollback", graph, to_version=version, new_version=graph.version)
+    return graph
 
 
 @router.get("/{graph_id}/compiled")
@@ -95,7 +114,7 @@ def compiled(graph_id: int, user_id: int | None = Depends(current_user_id), db: 
 
 
 @router.post("/{graph_id}/publish")
-async def publish(graph_id: int, payload: GraphPublish, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
+async def publish(graph_id: int, payload: GraphPublish, request: Request, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
     version = svc.publish_graph_version(db, user_id, graph_id, payload.version)
     graph = svc.get_graph_by_id(db, user_id, graph_id)
     try:
@@ -103,6 +122,8 @@ async def publish(graph_id: int, payload: GraphPublish, user_id: int | None = De
     except ServiceError:
         svc.unpublish_graph_version(db, user_id, graph_id)
         raise
+    _audit(request, db, "graph.publish", graph, version=version.version, hash=version.compiled_hash,
+           triggers=[t.kind for t in synced])
     return {
         "graph_id": graph_id,
         "published_version": version.version,
@@ -112,11 +133,13 @@ async def publish(graph_id: int, payload: GraphPublish, user_id: int | None = De
 
 
 @router.post("/{graph_id}/unpublish", response_model=GraphRead)
-async def unpublish(graph_id: int, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
+async def unpublish(graph_id: int, request: Request, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
     graph = svc.get_graph_by_id(db, user_id, graph_id)
     await triggers.deactivate_graph_triggers(db, graph)
     await triggers.delete_schedule_for_graph(db, graph)
-    return svc.unpublish_graph_version(db, user_id, graph_id)
+    graph = svc.unpublish_graph_version(db, user_id, graph_id)
+    _audit(request, db, "graph.unpublish", graph)
+    return graph
 
 
 @router.get("/{graph_id}/triggers", response_model=list[TriggerRead])
@@ -126,16 +149,18 @@ def list_triggers(graph_id: int, user_id: int | None = Depends(current_user_id),
 
 
 @router.post("/{graph_id}/activate", response_model=GraphRead)
-async def activate(graph_id: int, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
+async def activate(graph_id: int, request: Request, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
     graph = svc.get_graph_by_id(db, user_id, graph_id)
     svc.require_edit(db, user_id, graph)
     await triggers.activate_graph_triggers(db, graph)
+    _audit(request, db, "graph.activate", graph)
     return graph
 
 
 @router.post("/{graph_id}/deactivate", response_model=GraphRead)
-async def deactivate(graph_id: int, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
+async def deactivate(graph_id: int, request: Request, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
     graph = svc.get_graph_by_id(db, user_id, graph_id)
     svc.require_edit(db, user_id, graph)
     await triggers.deactivate_graph_triggers(db, graph)
+    _audit(request, db, "graph.deactivate", graph)
     return graph

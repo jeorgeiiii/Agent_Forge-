@@ -244,6 +244,47 @@ class OAuthStateRecord(Base):
 # --------------------------------------------------------------------------- #
 
 
+class AuditEventRecord(Base):
+    """Cluster 17 - append-only, hash-chained audit log.
+
+    Each row's ``hash`` = sha256(prev_hash + canonical JSON of the row), chained per
+    ``chain`` (one chain per workspace, plus "global"). Editing or deleting any row
+    breaks every hash after it, which ``verify_audit_chain`` detects.
+    """
+
+    __tablename__ = "audit_events"
+    # one row per (chain, position): two concurrent writers can never both append position N
+    __table_args__ = (UniqueConstraint("chain", "position", name="uq_audit_chain_position"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    chain: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)  # 1, 2, 3 ... within the chain
+    workspace_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
+    actor_user_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
+    actor_type: Mapped[str] = mapped_column(String(20), nullable=False)  # user | api_key | anonymous | system
+    actor_label: Mapped[str] = mapped_column(String(320), default="", nullable=False)  # email / key prefix
+    action: Mapped[str] = mapped_column(String(60), index=True, nullable=False)  # e.g. graph.update
+    resource_type: Mapped[str] = mapped_column(String(40), default="", nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(100), default="", nullable=False)
+    outcome: Mapped[str] = mapped_column(String(20), default="success", nullable=False)  # success | denied | failure
+    ip_address: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    user_agent: Mapped[str] = mapped_column(String(300), default="", nullable=False)
+    details: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict, nullable=False)
+    created_at: Mapped[str] = mapped_column(String(40), nullable=False)  # ISO-8601 UTC, part of the hash
+    prev_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+
+
+class AuditChainHead(Base):
+    """Last position + hash of each chain; updated with compare-and-swap so concurrent writers cannot fork it."""
+
+    __tablename__ = "audit_chain_heads"
+
+    chain: Mapped[str] = mapped_column(String(40), primary_key=True)
+    last_position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class MemorySessionRecord(Base):
     """Cluster 12 - index of agent conversations (the memory key itself is an opaque hash)."""
 

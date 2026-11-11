@@ -10,6 +10,7 @@ from .config import get_settings
 from .db import SessionLocal, initialize_database
 from .services.runs import reconcile_stale_runs
 from .routes import (
+    audit,
     auth,
     copilot,
     credentials,
@@ -73,6 +74,7 @@ async def service_error_handler(_request: Request, error: ServiceError) -> JSONR
 
 # Support both /api/<x> and /<x> prefixes for flexibility with Next.js rewrites
 for router in (
+    audit.router,
     auth.router,
     workspaces.router,
     graphs.router,

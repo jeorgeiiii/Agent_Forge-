@@ -43,8 +43,16 @@ def get_optional_user(request: Request, db: Session = Depends(get_db)) -> UserRe
     user_id = auth.validate_session(db, session_token_from_request(request))
     if user_id is not None:
         user = auth.find_user_by_id(db, user_id)
-        return user if user and user.is_active else None
-    return auth.get_user_by_api_key(db, _api_key_from_request(request))
+        request.state.auth_method = "session"  # read by the audit log
+        request.state.user = user if user and user.is_active else None
+        return request.state.user
+    raw_key = _api_key_from_request(request)
+    user = auth.get_user_by_api_key(db, raw_key)
+    if user is not None:
+        request.state.auth_method = "api_key"
+        request.state.api_key_prefix = (raw_key or "")[:10]
+    request.state.user = user
+    return user
 
 
 def get_current_user(user: UserRecord | None = Depends(get_optional_user)) -> UserRecord:
@@ -67,3 +75,10 @@ def require_internal_token(x_internal_token: str = Header(default="")) -> None:
         raise HTTPException(status_code=503, detail="INTERNAL_API_TOKEN is not configured.")
     if not hmac.compare_digest(x_internal_token, expected):
         raise HTTPException(status_code=403, detail="Invalid internal token.")
+
+
+def current_user_and_id(user: UserRecord | None = Depends(get_optional_user)) -> tuple[UserRecord | None, int | None]:
+    """Like current_user_id, but also returns the user object (needed to attribute audit events)."""
+    if user is None and get_settings().auth_required:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not signed in.")
+    return user, (user.id if user else None)
