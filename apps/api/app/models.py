@@ -82,7 +82,27 @@ class WorkspaceRecord(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     # Cluster 18: per-workspace overrides of the retention defaults (None = use defaults)
     retention: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
+    # Cluster 16: soft delete (restorable until retention purges it)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class InvitationRecord(Base):
+    """Cluster 16 - an emailed invite to join a workspace. Only the token's SHA-256 is stored."""
+
+    __tablename__ = "invitations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True, nullable=False)
+    email: Mapped[str] = mapped_column(String(320), index=True, nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    invited_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    accepted_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class MembershipRecord(Base):
@@ -291,6 +311,25 @@ class AuditChainHead(Base):
     pruned_position: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
     pruned_hash: Mapped[str] = mapped_column(String(64), default="0" * 64, server_default=text("'" + "0" * 64 + "'"),
                                              nullable=False)
+
+
+class FileRecord(Base):
+    """Cluster 19 - a stored file. Bytes live in the storage backend (local disk or S3); this is the metadata."""
+
+    __tablename__ = "files"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)  # uuid4: unguessable, safe in URLs
+    workspace_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
+    graph_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
+    run_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)  # produced by a run
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    mime: Mapped[str] = mapped_column(String(120), nullable=False)
+    size: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(300), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="ready", nullable=False)  # pending (presigned upload) | ready
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class MemorySessionRecord(Base):

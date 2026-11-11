@@ -41,9 +41,10 @@ def get_user_role_in_workspace(db: Session, user_id: int | None, workspace_id: i
     if user_id is None:
         return None
     return db.scalar(
-        select(MembershipRecord.role).where(
-            MembershipRecord.workspace_id == workspace_id, MembershipRecord.user_id == user_id
-        )
+        select(MembershipRecord.role)
+        .join(WorkspaceRecord, WorkspaceRecord.id == MembershipRecord.workspace_id)
+        .where(MembershipRecord.workspace_id == workspace_id, MembershipRecord.user_id == user_id,
+               WorkspaceRecord.deleted_at.is_(None))  # a deleted workspace grants no access
     )
 
 
@@ -129,7 +130,7 @@ def list_workspaces_for_user(db: Session, user_id: int) -> list[tuple[WorkspaceR
     rows = db.execute(
         select(WorkspaceRecord, MembershipRecord.role)
         .join(MembershipRecord, MembershipRecord.workspace_id == WorkspaceRecord.id)
-        .where(MembershipRecord.user_id == user_id)
+        .where(MembershipRecord.user_id == user_id, WorkspaceRecord.deleted_at.is_(None))
         .order_by(WorkspaceRecord.id)
     ).all()
     return [(workspace, role) for workspace, role in rows]

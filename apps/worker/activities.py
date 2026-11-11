@@ -1,6 +1,7 @@
 """Temporal activities: run a single node, checkpoint run state, fire schedules."""
 
 import base64
+import mimetypes
 import json
 import logging
 import time
@@ -21,6 +22,7 @@ from ssrf import validate_public_http_url
 log = logging.getLogger(__name__)
 
 MAX_RESPONSE_BYTES = 1_000_000
+MAX_FILE_BYTES = 25 * 1024 * 1024  # keep in line with the API's MAX_FILE_BYTES
 RESTRICTED_HEADERS = {"host", "content-length", "transfer-encoding"}
 
 
@@ -34,6 +36,7 @@ class NodeContext:
         self.run_input: Any = request.get("run_input")
         self.order: list[str] = request.get("order") or []
         self.usage: dict[str, int] | None = None  # set by nodes that call an LLM
+        self.workflow_id: str = (request.get("run") or {}).get("workflow_id", "")
         self.expressions = build_expression_context(
             run_input=self.run_input,
             node_outputs=request.get("node_outputs") or {},
@@ -91,6 +94,41 @@ async def _merge(ctx: NodeContext) -> dict[str, Any]:
     return {"main": merge_branches(ctx.inputs, mode=mode, key=ctx.raw_config.get("key"), order=ctx.order)}
 
 
+# --------------------------------------------------------------------------- files
+
+
+def is_file_ref(value: Any) -> bool:
+    return isinstance(value, dict) and isinstance(value.get("$file"), dict) and "id" in value["$file"]
+
+
+async def store_file(data: bytes, name: str, mime: str, workflow_id: str) -> dict[str, Any]:
+    """Store bytes through the API; returns the {"$file": ...} reference nodes pass around."""
+    response = await api_client.call_raw("POST", "/internal/files", content=data, headers={
+        "X-File-Name": name.encode("ascii", "replace").decode(), "X-File-Mime": mime, "X-Workflow-Id": workflow_id})
+    return response.json()
+
+
+async def read_file_ref(ref: Any, workflow_id: str) -> tuple[bytes, str]:
+    if not is_file_ref(ref):
+        raise ValueError('body_file must be a file reference like {"$file": {"id": ...}}.')
+    response = await api_client.call_raw("GET", f"/internal/files/{ref['$file']['id']}?workflow_id={workflow_id}")
+    return response.content, response.headers.get("content-type", "application/octet-stream").split(";")[0]
+
+
+def _filename_from(response: httpx.Response, url: str) -> str:
+    """Name from Content-Disposition, else the URL; always with an extension matching the type."""
+    disposition = response.headers.get("content-disposition", "")
+    if "filename=" in disposition:
+        name = disposition.split("filename=", 1)[1].strip().strip('"').split(";")[0]
+    else:
+        name = url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+    name = name or "download"
+    if "." not in name:
+        mime = response.headers.get("content-type", "").split(";")[0].strip()
+        name += mimetypes.guess_extension(mime) or ""
+    return name
+
+
 async def _auth_headers(config: dict[str, Any]) -> dict[str, str]:
     credential_id = config.get("credential_id")
     auth_type = config.get("auth_type", "bearer" if credential_id else "none")
@@ -128,10 +166,17 @@ async def _http(ctx: NodeContext) -> dict[str, Any]:
 
     body = ctx.param("body")
     request_kwargs: dict[str, Any] = {}
-    if isinstance(body, (dict, list)):
+    body_file = ctx.param("body_file")
+    if body_file:
+        content, file_mime = await read_file_ref(body_file, ctx.workflow_id)
+        request_kwargs["content"] = content
+        headers.setdefault("Content-Type", file_mime)
+    elif isinstance(body, (dict, list)):
         request_kwargs["json"] = body
     elif body is not None:
         request_kwargs["content"] = str(body)
+    as_file = ctx.raw_config.get("response_format") == "file"
+    limit = MAX_FILE_BYTES if as_file else MAX_RESPONSE_BYTES
 
     try:
         async with httpx.AsyncClient(timeout=15, follow_redirects=False, trust_env=False) as client:
@@ -141,9 +186,15 @@ async def _http(ctx: NodeContext) -> dict[str, Any]:
                 size = 0
                 async for chunk in response.aiter_bytes():
                     size += len(chunk)
-                    if size > MAX_RESPONSE_BYTES:
-                        raise ValueError("HTTP node response exceeded the 1 MB limit.")
+                    if size > limit:
+                        raise ValueError(f"HTTP node response exceeded the {limit // (1024 * 1024)} MB limit."
+                                         + ("" if as_file else ' Use response_format "file" for large/binary responses.'))
                     chunks.append(chunk)
+                if as_file:
+                    name = _filename_from(response, url)
+                    mime = response.headers.get("content-type", "application/octet-stream").split(";")[0]
+                    ref = await store_file(b"".join(chunks), name, mime, ctx.workflow_id)
+                    return {"main": {"status_code": response.status_code, "body": ref, "file": ref}}
                 text = b"".join(chunks).decode(response.encoding or "utf-8", errors="replace")
                 try:
                     data = json.loads(text) if "json" in response.headers.get("content-type", "") else text

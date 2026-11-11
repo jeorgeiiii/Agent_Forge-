@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..compiler import GraphValidationError, compile_graph
 from ..config import get_settings
-from ..models import GraphRecord, GraphVersionRecord, MembershipRecord
+from ..models import GraphRecord, GraphVersionRecord, MembershipRecord, WorkspaceRecord
 from .authz import can_user_edit_graph, can_user_view_graph, default_workspace_for_user, require_role
 from .common import Forbidden, NotFound, ServiceError, now_utc
 
@@ -104,7 +104,9 @@ def list_graphs_for_workspace(db: Session, user_id: int | None, workspace_id: in
         require_role(db, user_id, workspace_id, "viewer")
         return list(db.scalars(query.where(GraphRecord.workspace_id == workspace_id)))
     if user_id is not None:
-        member_of = select(MembershipRecord.workspace_id).where(MembershipRecord.user_id == user_id)
+        member_of = (select(MembershipRecord.workspace_id)
+                     .join(WorkspaceRecord, WorkspaceRecord.id == MembershipRecord.workspace_id)
+                     .where(MembershipRecord.user_id == user_id, WorkspaceRecord.deleted_at.is_(None)))
         condition = GraphRecord.workspace_id.in_(member_of)
         if legacy_open:
             condition = condition | GraphRecord.workspace_id.is_(None)

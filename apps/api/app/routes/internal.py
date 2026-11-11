@@ -3,11 +3,13 @@
 import json
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Body, Depends, Request, Response
 from sqlalchemy.orm import Session
 
 from ..deps import get_db, require_internal_token
-from ..services import credentials, events, memory, runs, triggers
+from ..config import get_settings
+from ..services import credentials, events, files, memory, runs, triggers
+from ..services.common import ServiceError
 
 router = APIRouter(prefix="/internal", tags=["internal"], dependencies=[Depends(require_internal_token)], include_in_schema=False)
 
@@ -24,6 +26,33 @@ def events_append(workflow_id: str, payload: dict[str, Any] = Body(...), db: Ses
     run = runs.run_by_workflow_id(db, workflow_id)
     added = events.ingest_events(db, run, payload.get("events") or [], source=str(payload.get("source") or ""))
     return {"added": added}
+
+
+@router.post("/files")
+async def file_store(request: Request, db: Session = Depends(get_db)):
+    """Worker stores bytes a node produced. Headers: X-File-Name, X-File-Mime, X-Workflow-Id. Returns the $file ref."""
+    limit = get_settings().max_file_bytes
+    data = b""
+    async for chunk in request.stream():
+        data += chunk
+        if len(data) > limit:
+            raise ServiceError(f"File is larger than the {limit // (1024 * 1024)} MB limit.", 413)
+    workspace_id, graph_id, run_id = files.resolve_run_context(db, request.headers.get("x-workflow-id", ""))
+    record = files.upload_file(db, None, data=data, name=request.headers.get("x-file-name", "file"),
+                               mime=request.headers.get("x-file-mime"), workspace_id=workspace_id,
+                               graph_id=graph_id, run_id=run_id, check_access=False)
+    return files.file_ref(record)
+
+
+@router.get("/files/{file_id}")
+def file_bytes(file_id: str, workflow_id: str = "", db: Session = Depends(get_db)):
+    """Worker reads a file a node references - only files of the same workspace as the run."""
+    record = db.get(files.FileRecord, file_id)
+    workspace_id, _, _ = files.resolve_run_context(db, workflow_id)
+    if record is None or (workflow_id and record.workspace_id != workspace_id):
+        raise ServiceError("File not found.", 404)
+    return Response(files.read_file_bytes(record), media_type=record.mime,
+                    headers={"X-File-Name": record.name.encode("ascii", "replace").decode()})
 
 
 @router.get("/credentials/{credential_id}")

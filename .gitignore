@@ -33,3 +33,6 @@ __pycache__/
 graphify-out/
 .DS_Store
 Thumbs.db
+
+# --- uploaded files (local storage backend) ---
+storage/

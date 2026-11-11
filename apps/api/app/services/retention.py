@@ -26,6 +26,7 @@ from ..models import (
     AuditChainHead,
     ChatMessageRecord,
     CredentialRecord,
+    FileRecord,
     GraphRecord,
     MembershipRecord,
     MemorySessionRecord,
@@ -39,6 +40,7 @@ from ..models import (
 from .audit import SYSTEM, Actor, prune_audit_chain, record_audit_event
 from .auth import verify_password
 from .authz import require_role
+from .files import delete_files_where
 from .common import Conflict, ServiceError, as_utc, now_utc
 
 POLICY_KEYS = {  # key -> (setting name, min days, max days)
@@ -123,6 +125,7 @@ def compact_old_runs(db: Session, now: datetime, *, dry_run: bool = False) -> in
             continue
         ids = [r.id for r in runs]
         db.execute(delete(RunEventRecord).where(RunEventRecord.run_id.in_(ids)))
+        delete_files_where(db, FileRecord.run_id.in_(ids))  # files a run produced are run data
         for run in runs:
             usage = (run.state or {}).get("usage")
             run.state = {"status": run.status, "compacted": True, **({"usage": usage} if usage else {})}
@@ -146,6 +149,7 @@ def delete_old_runs(db: Session, now: datetime, *, dry_run: bool = False) -> int
         total += len(ids)
         if ids and not dry_run:
             db.execute(delete(RunEventRecord).where(RunEventRecord.run_id.in_(ids)))
+            delete_files_where(db, FileRecord.run_id.in_(ids))
             db.execute(delete(RunRecord).where(RunRecord.id.in_(ids)))
             db.commit()
     return total
@@ -185,6 +189,7 @@ async def _hard_delete_graph(db: Session, graph: GraphRecord) -> None:
         pass
     keys = list(db.scalars(select(MemorySessionRecord.key).where(MemorySessionRecord.graph_id == graph.id)))
     _delete_memory_keys(db, keys)
+    delete_files_where(db, FileRecord.graph_id == graph.id)
     run_ids = list(db.scalars(select(RunRecord.id).where(RunRecord.graph_id == graph.id)))
     if run_ids:
         db.execute(delete(RunEventRecord).where(RunEventRecord.run_id.in_(run_ids)))
@@ -204,6 +209,35 @@ async def purge_deleted_graphs(db: Session, now: datetime, *, dry_run: bool = Fa
         if not dry_run:
             for graph in graphs:
                 await _hard_delete_graph(db, graph)
+    return total
+
+
+async def purge_workspace(db: Session, workspace_id: int) -> int:
+    """Permanently delete a workspace and everything in it. Returns graphs removed."""
+    from ..models import AuditEventRecord, InvitationRecord
+
+    removed = 0
+    for graph in list(db.scalars(select(GraphRecord).where(GraphRecord.workspace_id == workspace_id))):
+        await _hard_delete_graph(db, graph)
+        removed += 1
+    db.execute(delete(CredentialRecord).where(CredentialRecord.workspace_id == workspace_id))
+    delete_files_where(db, FileRecord.workspace_id == workspace_id)
+    db.execute(delete(InvitationRecord).where(InvitationRecord.workspace_id == workspace_id))
+    db.execute(delete(AuditEventRecord).where(AuditEventRecord.chain == f"ws:{workspace_id}"))
+    db.execute(delete(AuditChainHead).where(AuditChainHead.chain == f"ws:{workspace_id}"))
+    db.execute(delete(MembershipRecord).where(MembershipRecord.workspace_id == workspace_id))
+    db.execute(delete(WorkspaceRecord).where(WorkspaceRecord.id == workspace_id))
+    db.commit()
+    return removed
+
+
+async def purge_deleted_workspaces(db: Session, now: datetime, *, dry_run: bool = False) -> int:
+    total = 0
+    for workspace in list(db.scalars(select(WorkspaceRecord).where(WorkspaceRecord.deleted_at.is_not(None)))):
+        if as_utc(workspace.deleted_at) < now - timedelta(days=effective_policy(workspace)["deleted_graph_days"]):
+            total += 1
+            if not dry_run:
+                await purge_workspace(db, workspace.id)
     return total
 
 
@@ -238,6 +272,7 @@ async def run_retention(db: Session, *, now: datetime | None = None, dry_run: bo
         "runs_deleted": delete_old_runs(db, now, dry_run=dry_run),
         "memory_sessions_deleted": cleanup_memory(db, now, dry_run=dry_run),
         "graphs_purged": await purge_deleted_graphs(db, now, dry_run=dry_run),
+        "workspaces_purged": await purge_deleted_workspaces(db, now, dry_run=dry_run),
         "audit_entries_pruned": prune_audit(db, now, dry_run=dry_run),
         **{f"{k}_deleted": v for k, v in cleanup_auth_leftovers(db, now, dry_run=dry_run).items()},
     }
@@ -279,17 +314,7 @@ async def delete_user_data(db: Session, user: UserRecord, password: str, actor: 
 
     removed_graphs = 0
     for workspace_id in solo:
-        for graph in list(db.scalars(select(GraphRecord).where(GraphRecord.workspace_id == workspace_id))):
-            await _hard_delete_graph(db, graph)
-            removed_graphs += 1
-        db.execute(delete(CredentialRecord).where(CredentialRecord.workspace_id == workspace_id))
-        chain = f"ws:{workspace_id}"
-        from ..models import AuditEventRecord
-
-        db.execute(delete(AuditEventRecord).where(AuditEventRecord.chain == chain))
-        db.execute(delete(AuditChainHead).where(AuditChainHead.chain == chain))
-        db.execute(delete(MembershipRecord).where(MembershipRecord.workspace_id == workspace_id))
-        db.execute(delete(WorkspaceRecord).where(WorkspaceRecord.id == workspace_id))
+        removed_graphs += await purge_workspace(db, workspace_id)
     for membership in shared:
         db.delete(membership)
     db.execute(delete(SessionRecord).where(SessionRecord.user_id == user.id))

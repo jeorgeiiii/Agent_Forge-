@@ -14,6 +14,7 @@ from .routes import (
     auth,
     copilot,
     credentials,
+    files,
     graphs,
     internal,
     memory,
@@ -96,6 +97,7 @@ for router in (
     audit.router,
     auth.router,
     workspaces.router,
+    workspaces.invitations_router,
     graphs.router,
     runs.router,
     retention.router,
@@ -103,6 +105,7 @@ for router in (
     usage.router,
     node_types.router,
     credentials.router,
+    files.router,
     copilot.router,
     messages.router,
 ):

@@ -20,6 +20,31 @@ class Settings(BaseSettings):
     # http://localhost:4318/v1/traces (Jaeger / Grafana Tempo / Langfuse OTLP endpoint).
     otel_exporter_otlp_endpoint: str = ""
     otel_exporter_otlp_headers: str = ""  # "Authorization=Basic xxx,x-tenant=abc"
+    # --- Team & email (cluster 16) ---
+    public_app_url: str = "http://localhost:3000"  # the web app; invite links point here
+    invitation_ttl_hours: int = 24 * 7
+    mail_backend: str = "console"  # console (log only) | smtp
+    mail_from: str = "AgentForge <no-reply@localhost>"
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_ssl: bool = False  # true = implicit TLS (port 465); false = STARTTLS
+    smtp_starttls: bool = True  # upgrade plain connections with STARTTLS (turn off only for local test servers)
+
+    # --- Files (cluster 19) ---
+    storage_backend: str = "local"           # local | s3 (AWS S3, Cloudflare R2, MinIO, ...)
+    storage_local_dir: str = "./storage"
+    s3_bucket: str = ""
+    s3_region: str = "us-east-1"
+    s3_endpoint_url: str = ""                # e.g. https://<account>.r2.cloudflarestorage.com or http://minio:9000
+    s3_access_key_id: str = ""
+    s3_secret_access_key: str = ""
+    max_file_bytes: int = 25 * 1024 * 1024
+    signed_url_ttl_seconds: int = 300
+    # key for HMAC-signed local download/upload links (falls back to INTERNAL_API_TOKEN)
+    file_signing_key: str = ""
+
     # --- Data retention (cluster 18); workspace owners can override per workspace ---
     retention_run_data_days: int = 30        # then run input/output/state/events are deleted ("compacted")
     retention_run_rows_days: int = 365       # then the run row itself is deleted

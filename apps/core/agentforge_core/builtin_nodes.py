@@ -56,6 +56,9 @@ BUILTIN_SPECS: list[NodeTypeSpec] = [
             "credential_id": {"type": "integer"},
             "auth_type": {"type": "string", "enum": ["none", "bearer", "header", "basic"]},
             "auth_header_name": _STR,
+            # files (cluster 19): save the response as a file / send a stored file as the body
+            "response_format": {"type": "string", "enum": ["auto", "file"]},
+            "body_file": {},  # a {"$file": {...}} reference, usually an expression like {{ $json.file }}
         }},
     ),
     NodeTypeSpec(

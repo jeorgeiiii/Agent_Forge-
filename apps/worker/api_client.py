@@ -52,3 +52,18 @@ async def call(method: str, path: str, json: Any = None, timeout: float = 10) ->
         raise InternalApiError(f"{method} {path} failed with {response.status_code}: {response.text[:300]}",
                                response.status_code)
     return response.json() if response.content else None
+
+
+async def call_raw(method: str, path: str, *, content: bytes | None = None, headers: dict[str, str] | None = None,
+                   timeout: float = 60) -> httpx.Response:
+    """Like call(), but for binary bodies (file upload/download)."""
+    if not INTERNAL_TOKEN:
+        raise InternalApiError("INTERNAL_API_TOKEN is not set for the worker.")
+    try:
+        response = await _shared_client().request(method, path, content=content, headers=headers or {}, timeout=timeout)
+    except httpx.HTTPError as error:
+        raise InternalApiError(f"{method} {path} failed: {error}") from error
+    if response.status_code >= 400:
+        raise InternalApiError(f"{method} {path} failed with {response.status_code}: {response.text[:300]}",
+                               response.status_code)
+    return response
