@@ -37,12 +37,21 @@ async def credential(credential_id: int, db: Session = Depends(get_db)):
 
 @router.get("/memory/{key}")
 def memory_load(key: str, limit: int = 20, db: Session = Depends(get_db)):
-    return {"messages": memory.load_memory(db, key, limit)}
+    """{"summary": str|None, "covers_until": id, "messages": [{id, role, content}]}"""
+    return memory.load_memory(db, key, limit)
 
 
 @router.post("/memory/{key}")
 def memory_append(key: str, payload: dict[str, Any] = Body(...), db: Session = Depends(get_db)):
-    return {"added": memory.append_memory(db, key, payload.get("messages") or [])}
+    """Body: {"messages": [...], "meta": {"graph_id", "scope", "session_id"}}"""
+    return {"added": memory.append_memory(db, key, payload.get("messages") or [], payload.get("meta"))}
+
+
+@router.post("/memory/{key}/summary")
+def memory_summary(key: str, payload: dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Body: {"content": str, "covers_until": message id, "meta": {...}}"""
+    memory.save_summary(db, key, str(payload.get("content") or ""), int(payload.get("covers_until") or 0), payload.get("meta"))
+    return {"ok": True}
 
 
 @router.post("/triggers/{trigger_id}/fire")

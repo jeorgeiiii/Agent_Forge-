@@ -200,17 +200,7 @@ def test_stale_checkpoint_does_not_overwrite_newer_state(client):
     assert run["status"] == "success" and run["output"] == "new"
 
 
-def test_internal_memory_endpoints(client):
-    internal = {"X-Internal-Token": "test-internal-token"}
-    key = "mem:" + "a" * 40
-    assert client.get(f"/internal/memory/{key}").status_code == 403  # worker-only
-    for i in range(3):
-        client.post(f"/internal/memory/{key}", headers=internal, json={"messages": [
-            {"role": "user", "content": f"q{i}"}, {"role": "assistant", "content": f"a{i}"},
-            {"role": "system", "content": "ignored"}]})
-    last = client.get(f"/internal/memory/{key}?limit=2", headers=internal).json()["messages"]
-    assert last == [{"role": "user", "content": "q2"}, {"role": "assistant", "content": "a2"}]
-    assert client.get("/internal/memory/not-a-mem-key", headers=internal).status_code == 422
+# memory endpoint tests moved to tests/test_memory_api.py (cluster 12)
 
 
 def _run_row(client, name):

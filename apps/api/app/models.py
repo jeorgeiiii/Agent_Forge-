@@ -244,6 +244,21 @@ class OAuthStateRecord(Base):
 # --------------------------------------------------------------------------- #
 
 
+class MemorySessionRecord(Base):
+    """Cluster 12 - index of agent conversations (the memory key itself is an opaque hash)."""
+
+    __tablename__ = "memory_sessions"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    graph_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
+    scope: Mapped[str] = mapped_column(String(250), default="", nullable=False)  # agent path, e.g. boss/researcher
+    session_id: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    message_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    summary_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    last_message_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class ChatMessageRecord(Base):
     __tablename__ = "chat_messages"
 

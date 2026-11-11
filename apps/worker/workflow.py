@@ -6,7 +6,6 @@ are active, and the run state is checkpointed to Postgres after every step.
 """
 
 import asyncio
-import hashlib
 import json
 from datetime import timedelta
 from typing import Any
@@ -17,7 +16,9 @@ from temporalio.exceptions import ActivityError, ApplicationError, ChildWorkflow
 
 with workflow.unsafe.imports_passed_through():
     from activities import (checkpoint_state, emit_events, execute_node, fire_schedule_trigger, llm_chat,
-                            load_memory, save_memory)
+                            load_memory, save_memory, save_summary)
+    from agentforge_core.memory import (DEFAULT_KEEP_RECENT, DEFAULT_MAX_TOKENS, estimate_tokens, memory_key,
+                                        redact_pii, summary_request, trim_to_token_budget)
     from agentforge_core.builtin_nodes import MAX_AGENT_DEPTH  # supervisor -> worker -> sub-worker
     from agentforge_core.expressions import ExpressionError, build_expression_context, render_parameter
     from agentforge_core.runtime import (
@@ -341,6 +342,9 @@ class AgentLoop:
         self.run_workflow_id = run_workflow_id  # the RunGraphWorkflow whose event log everything goes to
         self.memory_scope = memory_scope  # stable path like "boss/researcher" (not the per-run workflow id)
         self.memory_note: str | None = None
+        self.memory_session = ""
+        self.memory_trimmed = 0
+        self.memory_summarized = 0
         self.depth = depth
         self.run_input = run_input
         self.node_outputs = node_outputs
@@ -369,14 +373,17 @@ class AgentLoop:
         if self.on_usage:
             self.on_usage(usage)
 
-    # ----- memory ----------------------------------------------------------
+    # ----- memory (cluster 12) ------------------------------------------------
+    def _memory_settings(self) -> dict[str, Any]:
+        return self.config.get("memory") or {}
+
     def _memory_key(self) -> str | None:
         """Opaque key for this agent's conversation, or None when memory is off.
 
-        Scoped by graph + agent path + session so different graphs/agents never
-        share a conversation; hashed so it always fits the DB column.
+        Scoped by graph + agent path + session (agentforge_core.memory.memory_key),
+        so different graphs/agents never share a conversation.
         """
-        memory = self.config.get("memory") or {}
+        memory = self._memory_settings()
         if memory.get("type", "none") == "none":
             return None
         try:
@@ -386,29 +393,87 @@ class AgentLoop:
         if session in (None, ""):
             self.memory_note = "memory skipped: no session_id for this run"
             return None
-        scope = f"{self.meta.get('graph_id', 'local')}|{self.memory_scope}|{session}"
-        return "mem:" + hashlib.sha256(scope.encode("utf-8")).hexdigest()[:40]
+        self.memory_session = str(session)
+        return memory_key(self.meta.get("graph_id"), self.memory_scope, self.memory_session)
 
-    async def _load_history(self, key: str) -> list[dict[str, Any]]:
-        memory = self.config["memory"]
-        limit = int(memory.get("window", DEFAULT_MEMORY_WINDOW)) if memory["type"] == "window" else MAX_MEMORY_BUFFER
+    def _memory_meta(self) -> dict[str, Any]:
+        return {"graph_id": self.meta.get("graph_id"), "scope": self.memory_scope, "session_id": self.memory_session}
+
+    async def _load_history(self, key: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """History to put in front of the prompt + the raw load (for summarising later)."""
+        memory = self._memory_settings()
+        kind = memory["type"]
+        limit = int(memory.get("window", DEFAULT_MEMORY_WINDOW)) if kind == "window" else MAX_MEMORY_BUFFER
         try:
-            return await workflow.execute_activity(
+            loaded = await workflow.execute_activity(
                 load_memory, args=[key, limit], start_to_close_timeout=timedelta(seconds=10),
                 retry_policy=RetryPolicy(maximum_attempts=3),
             )
         except ActivityError as error:  # memory is best-effort: answer without it rather than fail
             self.memory_note = f"memory unavailable: {_error_message(error)}"
-            return []
+            return [], {"summary": None, "messages": []}
+        budget = int(memory.get("max_tokens", DEFAULT_MAX_TOKENS))
+        raw = [{"role": m["role"], "content": m["content"]} for m in loaded["messages"]]
+        history: list[dict[str, Any]] = []
+        if kind == "summary" and loaded.get("summary"):
+            summary_msg = {"role": "system", "content": "Summary of the earlier conversation:\n" + loaded["summary"]}
+            budget -= estimate_tokens(summary_msg["content"])
+            history.append(summary_msg)
+        trimmed = trim_to_token_budget(raw, max(budget, 1))
+        if len(trimmed) < len(raw):
+            self.memory_trimmed = len(raw) - len(trimmed)
+        return history + trimmed, loaded
 
     async def _save_exchange(self, key: str, user_text: str, answer: str) -> None:
+        if self._memory_settings().get("redact_pii"):
+            user_text, answer = redact_pii(user_text), redact_pii(answer)
         try:
             await workflow.execute_activity(
-                save_memory, args=[key, [{"role": "user", "content": user_text}, {"role": "assistant", "content": answer}]],
+                save_memory,
+                args=[key, [{"role": "user", "content": user_text}, {"role": "assistant", "content": answer}],
+                      self._memory_meta()],
                 start_to_close_timeout=timedelta(seconds=10), retry_policy=RetryPolicy(maximum_attempts=5),
             )
         except ActivityError as error:
             self.memory_note = f"memory not saved: {_error_message(error)}"
+
+    async def _maybe_summarize(self, key: str, loaded: dict[str, Any], user_text: str, answer: str) -> None:
+        """'summary' memory: when the verbatim tail outgrows the budget, fold the older part into the summary.
+
+        Only messages that were LOADED (and so have ids) are folded; the newest
+        `keep_recent` messages always stay verbatim.
+        """
+        memory = self._memory_settings()
+        budget = int(memory.get("max_tokens", DEFAULT_MAX_TOKENS))
+        keep_recent = int(memory.get("keep_recent", DEFAULT_KEEP_RECENT))
+        stored = loaded.get("messages") or []
+        tail_tokens = sum(estimate_tokens(m["content"]) for m in stored) + estimate_tokens(user_text) + estimate_tokens(answer)
+        if tail_tokens <= budget:
+            return
+        foldable = stored[: max(0, len(stored) + 2 - keep_recent)]  # +2 = this run's exchange (not loaded, no ids)
+        if not foldable:
+            return
+        try:
+            reply = await workflow.execute_activity(
+                llm_chat,
+                {"credential_id": self.config.get("credential_id"), "base_url": self.config.get("base_url"),
+                 "model": memory.get("summary_model") or self.config["model"],
+                 "messages": summary_request(loaded.get("summary"), foldable), "max_tokens": 400},
+                start_to_close_timeout=timedelta(seconds=90), retry_policy=RetryPolicy(maximum_attempts=2),
+            )
+            self._charge(reply["usage"])
+            summary = (reply["message"].get("content") or "").strip()
+            if memory.get("redact_pii"):
+                summary = redact_pii(summary)
+            if summary:
+                await workflow.execute_activity(
+                    save_summary, args=[key, summary, int(foldable[-1]["id"]), self._memory_meta()],
+                    start_to_close_timeout=timedelta(seconds=10), retry_policy=RetryPolicy(maximum_attempts=5),
+                )
+                self.memory_summarized = len(foldable)
+                self._event("memory.summarized", messages=len(foldable), tokens_before=tail_tokens)
+        except ActivityError as error:  # a failed summary only means the history stays longer for now
+            self.memory_note = f"summary not updated: {_error_message(error)}"
 
     async def run(self) -> dict[str, Any]:
         config = self.config
@@ -416,8 +481,8 @@ class AgentLoop:
         if config.get("system"):
             messages.append({"role": "system", "content": str(render_parameter(config["system"], self.context))})
         user_text = str(render_parameter(config["prompt"], self.context))
-        memory_key = self._memory_key()
-        history = await self._load_history(memory_key) if memory_key else []
+        memory_key_ = self._memory_key()
+        history, loaded = await self._load_history(memory_key_) if memory_key_ else ([], {})
         messages.extend(history)
         messages.append({"role": "user", "content": user_text})
         tools = {t["name"]: t for t in config.get("tools") or []}
@@ -479,10 +544,19 @@ class AgentLoop:
                 await self.on_step()
 
         output: dict[str, Any] = {"text": text, "stopped_reason": stopped, "steps": len(self.trace), "usage": self.usage}
-        if memory_key and text:
-            await self._save_exchange(memory_key, user_text, text)
-        if memory_key or self.memory_note:
-            output["memory"] = {"loaded_messages": len(history), **({"note": self.memory_note} if self.memory_note else {})}
+        if memory_key_ and text:
+            await self._save_exchange(memory_key_, user_text, text)
+            if self._memory_settings().get("type") == "summary":
+                await self._maybe_summarize(memory_key_, loaded, user_text, text)
+        if memory_key_ or self.memory_note:
+            info = {"loaded_messages": len(history)}
+            if self.memory_trimmed:
+                info["trimmed_messages"] = self.memory_trimmed  # dropped to fit max_tokens
+            if self.memory_summarized:
+                info["summarized_messages"] = self.memory_summarized
+            if self.memory_note:
+                info["note"] = self.memory_note
+            output["memory"] = info
         if config.get("json_output") and stopped == "final":
             try:
                 output["json"] = json.loads(text)

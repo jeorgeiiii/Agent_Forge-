@@ -99,10 +99,15 @@ BUILTIN_SPECS: list[NodeTypeSpec] = [
             "json_output": {"type": "boolean"},
             # Conversation memory across runs, per chat session.
             "memory": {"type": "object", "properties": {
-                "type": {"type": "string", "enum": ["none", "window", "buffer"]},
+                # window = last N messages | buffer = whole chat (token-trimmed) |
+                # summary = running LLM summary of older messages + the newest ones verbatim
+                "type": {"type": "string", "enum": ["none", "window", "buffer", "summary"]},
                 # which conversation this run belongs to; default {{ $trigger.session_id }} (chat trigger)
                 "session_id": {"type": "string", "minLength": 1},
                 "window": {"type": "integer", "minimum": 1, "maximum": 100},  # messages kept for "window"
+                "max_tokens": {"type": "integer", "minimum": 100, "maximum": 200_000},  # history budget
+                "keep_recent": {"type": "integer", "minimum": 2, "maximum": 50},  # "summary": raw tail kept
+                "redact_pii": {"type": "boolean"},  # mask emails / phones / card numbers before saving
             }},
             "tools": {"type": "array", "items": {
                 "type": "object", "required": ["name", "description", "node"],

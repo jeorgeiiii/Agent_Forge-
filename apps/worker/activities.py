@@ -303,16 +303,24 @@ async def llm_chat(request: dict[str, Any]) -> dict[str, Any]:
 
 
 @activity.defn
-async def load_memory(key: str, limit: int) -> list[dict[str, Any]]:
-    """Past messages of a conversation (oldest first), read through the API."""
+async def load_memory(key: str, limit: int) -> dict[str, Any]:
+    """{"summary", "covers_until", "messages": [{id, role, content}]} of a conversation, via the API."""
     result = await api_client.call("GET", f"/internal/memory/{key}?limit={int(limit)}")
-    return result.get("messages") or []
+    return {"summary": result.get("summary"), "covers_until": result.get("covers_until", 0),
+            "messages": result.get("messages") or []}
 
 
 @activity.defn
-async def save_memory(key: str, messages: list[dict[str, Any]]) -> None:
+async def save_memory(key: str, messages: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> None:
     """Append this run's user message + agent answer to the conversation."""
-    await api_client.call("POST", f"/internal/memory/{key}", json={"messages": messages})
+    await api_client.call("POST", f"/internal/memory/{key}", json={"messages": messages, "meta": meta or {}})
+
+
+@activity.defn
+async def save_summary(key: str, content: str, covers_until: int, meta: dict[str, Any] | None = None) -> None:
+    """Store the new running summary (replaces every message with id <= covers_until)."""
+    await api_client.call("POST", f"/internal/memory/{key}/summary",
+                          json={"content": content, "covers_until": covers_until, "meta": meta or {}})
 
 
 @activity.defn

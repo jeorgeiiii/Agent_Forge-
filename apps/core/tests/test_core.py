@@ -202,3 +202,20 @@ def test_conditions_and_merges(ctx):
     assert evaluate_condition("$json.email.endswith('IO')", ctx)
     assert merge_branches({"a": [1], "b": 2}, order=["a", "b"]) == [1, 2]
     assert merge_branches({"a": [{"id": 1, "x": 1}], "b": [{"id": 1, "y": 2}]}, "combine_by_key", "id") == [{"id": 1, "x": 1, "y": 2}]
+
+
+# ------------------------------------------------------------ cluster 12 helpers
+
+def test_memory_helpers():
+    from agentforge_core.memory import estimate_tokens, memory_key, redact_pii, trim_to_token_budget
+
+    assert memory_key(7, "bot", "s1") == memory_key(7, "bot", "s1") != memory_key(8, "bot", "s1")
+    assert memory_key(7, "bot", "s1").startswith("mem:") and len(memory_key(7, "bot", "s1")) == 44
+    msgs = [{"role": "user", "content": "a" * 400}, {"role": "assistant", "content": "b" * 400},
+            {"role": "user", "content": "c" * 40}, {"role": "assistant", "content": "d" * 40}]
+    assert trim_to_token_budget(msgs, 10_000) == msgs
+    assert [m["content"][0] for m in trim_to_token_budget(msgs, 40)] == ["c", "d"]
+    assert trim_to_token_budget(msgs[:2], 120) == []  # only the reply fits -> dropped, never an orphan reply
+    assert estimate_tokens("abcd" * 10) == 14
+    text = redact_pii("ada@example.com, +1 (415) 555-0100, 4111-1111-1111-1111, order 12345, year 2026")
+    assert text == "[email], [phone], [card], order 12345, year 2026"
