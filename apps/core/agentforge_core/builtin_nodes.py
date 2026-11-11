@@ -6,8 +6,9 @@ from typing import Any
 from .registry import NodeTypeSpec, register_config_validator, register_node_type, validate_node_config
 
 _STR = {"type": "string"}
-# Node types an agent may use as tools (no triggers / flow control / nested agents yet).
-AGENT_TOOL_NODE_TYPES = ("http", "template", "set", "llm")
+# Node types an agent may use as tools (no triggers / flow control).
+MAX_AGENT_DEPTH = 3  # supervisor -> worker -> sub-worker (enforced at compile time and at runtime)
+AGENT_TOOL_NODE_TYPES = ("http", "template", "set", "llm", "agent")  # "agent" = sub-agent
 _TOOL_NAME = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 BUILTIN_SPECS: list[NodeTypeSpec] = [
@@ -153,9 +154,20 @@ BUILTIN_SPECS: list[NodeTypeSpec] = [
 ]
 
 
+def agent_depth(config: dict[str, Any]) -> int:
+    """1 for an agent with no sub-agents, 2 if it delegates to one, ..."""
+    subs = [t["node"].get("config") or {} for t in config.get("tools") or []
+            if isinstance(t, dict) and isinstance(t.get("node"), dict) and t["node"].get("type") == "agent"]
+    return 1 + max((agent_depth(sub) for sub in subs), default=0)
+
+
 def validate_agent_config(config: dict[str, Any]) -> list[str]:
-    """Tool names must be unique and API-safe; each tool's node config must be valid."""
+    """Tool names must be unique and API-safe; each tool's node config must be valid
+    (recursively for sub-agents); agent nesting may not exceed MAX_AGENT_DEPTH."""
     errors: list[str] = []
+    depth = agent_depth(config)
+    if depth > MAX_AGENT_DEPTH:
+        return [f"Agents are nested {depth} levels deep; the maximum is {MAX_AGENT_DEPTH}."]
     seen: set[str] = set()
     for index, tool in enumerate(config.get("tools") or []):
         name = tool.get("name", "")

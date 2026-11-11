@@ -12,10 +12,11 @@ from typing import Any
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
-from temporalio.exceptions import ActivityError, ApplicationError
+from temporalio.exceptions import ActivityError, ApplicationError, ChildWorkflowError
 
 with workflow.unsafe.imports_passed_through():
     from activities import checkpoint_state, execute_node, fire_schedule_trigger, llm_chat
+    from agentforge_core.builtin_nodes import MAX_AGENT_DEPTH  # supervisor -> worker -> sub-worker
     from agentforge_core.expressions import build_expression_context, render_parameter
     from agentforge_core.runtime import (
         final_output,
@@ -34,7 +35,9 @@ MAX_PARALLEL = 10
 
 
 def _error_message(error: BaseException) -> str:
-    cause = error.cause if isinstance(error, ActivityError) and error.cause else error
+    cause = error
+    while isinstance(cause, (ActivityError, ChildWorkflowError)) and cause.cause:  # unwrap to the real error
+        cause = cause.cause
     return getattr(cause, "message", None) or str(cause)
 
 
@@ -136,112 +139,24 @@ class RunGraphWorkflow:
         finally:
             info["finished_at"] = workflow.now().isoformat()
 
-    # ----- agent loop ------------------------------------------------------
+    # ----- agent node --------------------------------------------------------
     async def run_agent(self, ir, node, resolved, run_input, meta, info) -> dict[str, Any]:
-        """LLM <-> tools loop. Each LLM call and tool call is its own activity, so the
-        loop is durable: after a crash Temporal replays it without re-calling the model."""
-        config = node["config"]
-        context = build_expression_context(
+        """Agent node in the graph: runs the shared AgentLoop at depth 1."""
+        labels = {i: n.get("label") for i, n in ir["nodes"].items() if n.get("label")}
+        loop = AgentLoop(
+            node["config"],
+            depth=1,
+            current_input=resolved["input"],
             run_input=run_input,
             node_outputs=node_outputs_for_context(self._state),
-            labels={i: n.get("label") for i, n in ir["nodes"].items() if n.get("label")},
-            current_input=resolved["input"],
-            run_meta=meta,
-            now=workflow.now().isoformat(),
+            labels=labels,
+            meta=meta,
+            id_prefix=f"{self._workflow_id}/{node['id']}",
+            on_usage=self._add_usage,
+            on_step=self._checkpoint,  # progress is visible in the run while the agent works
         )
-        messages: list[dict[str, Any]] = []
-        if config.get("system"):
-            messages.append({"role": "system", "content": str(render_parameter(config["system"], context))})
-        messages.append({"role": "user", "content": str(render_parameter(config["prompt"], context))})
-
-        tools = {t["name"]: t for t in config.get("tools") or []}
-        tool_defs = [
-            {"type": "function", "function": {
-                "name": t["name"],
-                "description": t["description"],
-                "parameters": t.get("parameters") or {"type": "object", "properties": {}},
-            }}
-            for t in tools.values()
-        ]
-        max_steps = int(config.get("max_steps", DEFAULT_AGENT_STEPS))
-        token_budget = config.get("max_total_tokens")
-        usage = {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}
-        trace: list[dict[str, Any]] = []
-        info["agent"] = {"steps": trace, "usage": usage}
-        text, stopped = "", "max_steps"
-
-        for step in range(1, max_steps + 1):
-            reply = await workflow.execute_activity(
-                llm_chat,
-                {
-                    "credential_id": config.get("credential_id"),
-                    "base_url": config.get("base_url"),
-                    "model": config["model"],
-                    "messages": messages,
-                    "tools": tool_defs,
-                    "temperature": config.get("temperature"),
-                    "max_tokens": config.get("max_tokens"),
-                    "json_output": config.get("json_output") and not tool_defs,
-                },
-                start_to_close_timeout=timedelta(seconds=90),
-                retry_policy=RetryPolicy(maximum_attempts=3, initial_interval=timedelta(seconds=2), backoff_coefficient=2.0),
-            )
-            for key in usage:
-                usage[key] += reply["usage"].get(key, 0)
-            self._add_usage(reply["usage"])
-            message = reply["message"]
-            messages.append(message)
-            text = message.get("content") or ""
-            calls = message.get("tool_calls") or []
-            trace.append({"step": step, "tool_calls": [c.get("function", {}).get("name") for c in calls]})
-            if not calls:
-                stopped = "final"
-                break
-            if token_budget and usage["input_tokens"] + usage["output_tokens"] >= int(token_budget):
-                stopped = "token_budget"
-                break
-            results = await asyncio.gather(*(self._run_tool(tools, call, run_input, meta) for call in calls))
-            messages.extend(results)
-            await self._checkpoint()  # progress is visible in the run while the agent works
-
-        output: dict[str, Any] = {"text": text, "stopped_reason": stopped, "steps": len(trace), "usage": usage}
-        if config.get("json_output") and stopped == "final":
-            try:
-                output["json"] = json.loads(text)
-            except json.JSONDecodeError:
-                output["json_error"] = "The agent's final answer was not valid JSON."
-        return {"main": output}
-
-    async def _run_tool(self, tools, call, run_input, meta) -> dict[str, Any]:
-        """Execute one tool call; errors are reported back to the model instead of failing the run."""
-        call_id = call.get("id", "")
-        name = call.get("function", {}).get("name", "")
-        tool = tools.get(name)
-        try:
-            if tool is None:
-                raise ValueError(f"Unknown tool '{name}'.")
-            arguments = json.loads(call.get("function", {}).get("arguments") or "{}")
-            if not isinstance(arguments, dict):
-                raise ValueError("Tool arguments must be a JSON object.")
-            result = await workflow.execute_activity(
-                execute_node,
-                {
-                    "node": {"id": f"tool:{name}", "type": tool["node"]["type"], "label": name,
-                             "config": tool["node"].get("config") or {}},
-                    "input": arguments,
-                    "tool_args": arguments,
-                    "run_input": run_input,
-                    "node_outputs": node_outputs_for_context(self._state),
-                    "run": meta,
-                },
-                start_to_close_timeout=NODE_TIMEOUT,
-                retry_policy=RetryPolicy(maximum_attempts=2),
-            )
-            self._add_usage(result.get("usage"))
-            content = json.dumps(primary_output(result["outputs"]), default=str)
-        except (ActivityError, ApplicationError, ValueError, json.JSONDecodeError) as error:
-            content = json.dumps({"error": _error_message(error)})
-        return {"role": "tool", "tool_call_id": call_id, "content": content[:MAX_TOOL_RESULT_CHARS]}
+        info["agent"] = {"steps": loop.trace, "usage": loop.usage}
+        return {"main": await loop.run()}
 
     def _add_usage(self, usage: dict[str, int] | None) -> None:
         """Run-level token totals across every LLM call (shown in the run status)."""
@@ -328,6 +243,204 @@ class RunGraphWorkflow:
             )
         except ActivityError as error:
             workflow.logger.warning("Checkpoint failed: %s", _error_message(error))
+
+
+class AgentLoop:
+    """The LLM <-> tools loop, shared by the agent node and by sub-agents.
+
+    Every LLM call and tool call is its own activity, so the loop is durable:
+    after a crash Temporal replays it without calling the model again. A tool
+    whose node type is ``agent`` runs as a child ``AgentWorkflow`` one level
+    deeper - that is how a supervisor agent delegates to worker agents.
+    """
+
+    def __init__(self, config, *, depth, current_input, run_input, node_outputs, labels, meta,
+                 id_prefix, on_usage=None, on_step=None):
+        self.config = config
+        self.depth = depth
+        self.run_input = run_input
+        self.node_outputs = node_outputs
+        self.labels = labels
+        self.meta = meta
+        self.id_prefix = id_prefix
+        self.on_usage = on_usage
+        self.on_step = on_step
+        self.usage = {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}
+        self.trace: list[dict[str, Any]] = []
+        self.context = build_expression_context(
+            run_input=run_input, node_outputs=node_outputs, labels=labels, current_input=current_input,
+            run_meta=meta, now=workflow.now().isoformat(),
+            tool_args=current_input if isinstance(current_input, dict) else None,
+        )
+
+    def _charge(self, usage: dict[str, int] | None) -> None:
+        if not usage:
+            return
+        for key in self.usage:
+            self.usage[key] += int(usage.get(key, 0))
+        if self.on_usage:
+            self.on_usage(usage)
+
+    async def run(self) -> dict[str, Any]:
+        config = self.config
+        messages: list[dict[str, Any]] = []
+        if config.get("system"):
+            messages.append({"role": "system", "content": str(render_parameter(config["system"], self.context))})
+        messages.append({"role": "user", "content": str(render_parameter(config["prompt"], self.context))})
+        tools = {t["name"]: t for t in config.get("tools") or []}
+        tool_defs = [
+            {"type": "function", "function": {
+                "name": t["name"],
+                "description": t["description"],
+                "parameters": t.get("parameters") or _default_tool_parameters(t),
+            }}
+            for t in tools.values()
+        ]
+        max_steps = int(config.get("max_steps", DEFAULT_AGENT_STEPS))
+        token_budget = config.get("max_total_tokens")
+        text, stopped = "", "max_steps"
+
+        for step in range(1, max_steps + 1):
+            reply = await workflow.execute_activity(
+                llm_chat,
+                {
+                    "credential_id": config.get("credential_id"),
+                    "base_url": config.get("base_url"),
+                    "model": config["model"],
+                    "messages": messages,
+                    "tools": tool_defs,
+                    "temperature": config.get("temperature"),
+                    "max_tokens": config.get("max_tokens"),
+                    "json_output": config.get("json_output") and not tool_defs,
+                },
+                start_to_close_timeout=timedelta(seconds=90),
+                retry_policy=RetryPolicy(maximum_attempts=3, initial_interval=timedelta(seconds=2), backoff_coefficient=2.0),
+            )
+            self._charge(reply["usage"])
+            message = reply["message"]
+            messages.append(message)
+            text = message.get("content") or ""
+            calls = message.get("tool_calls") or []
+            self.trace.append({"step": step, "tool_calls": [c.get("function", {}).get("name") for c in calls]})
+            if not calls:
+                stopped = "final"
+                break
+            if token_budget and self.usage["input_tokens"] + self.usage["output_tokens"] >= int(token_budget):
+                stopped = "token_budget"
+                break
+            results = await asyncio.gather(*(self._run_tool(tools, call, step) for call in calls))
+            messages.extend(results)
+            if self.on_step:
+                await self.on_step()
+
+        output: dict[str, Any] = {"text": text, "stopped_reason": stopped, "steps": len(self.trace), "usage": self.usage}
+        if config.get("json_output") and stopped == "final":
+            try:
+                output["json"] = json.loads(text)
+            except json.JSONDecodeError:
+                output["json_error"] = "The agent's final answer was not valid JSON."
+        return output
+
+    async def _run_tool(self, tools, call, step) -> dict[str, Any]:
+        """Execute one tool call; errors are reported back to the model instead of failing the run."""
+        call_id = call.get("id", "") or f"s{step}"
+        name = call.get("function", {}).get("name", "")
+        tool = tools.get(name)
+        try:
+            if tool is None:
+                raise ValueError(f"Unknown tool '{name}'.")
+            arguments = json.loads(call.get("function", {}).get("arguments") or "{}")
+            if not isinstance(arguments, dict):
+                raise ValueError("Tool arguments must be a JSON object.")
+            node_type = tool["node"]["type"]
+            node_config = tool["node"].get("config") or {}
+            if node_type == "agent":
+                content = await self._run_sub_agent(name, call_id, node_config, arguments)
+            else:
+                result = await workflow.execute_activity(
+                    execute_node,
+                    {
+                        "node": {"id": f"tool:{name}", "type": node_type, "label": name, "config": node_config},
+                        "input": arguments,
+                        "tool_args": arguments,
+                        "run_input": self.run_input,
+                        "node_outputs": self.node_outputs,
+                        "run": self.meta,
+                    },
+                    start_to_close_timeout=NODE_TIMEOUT,
+                    retry_policy=RetryPolicy(maximum_attempts=2),
+                )
+                self._charge(result.get("usage"))
+                content = json.dumps(primary_output(result["outputs"]), default=str)
+        except (ActivityError, ChildWorkflowError, ApplicationError, ValueError, json.JSONDecodeError) as error:
+            content = json.dumps({"error": _error_message(error)})
+        return {"role": "tool", "tool_call_id": call_id, "content": content[:MAX_TOOL_RESULT_CHARS]}
+
+    async def _run_sub_agent(self, name, call_id, config, arguments) -> str:
+        """Delegate to another agent as a child workflow, one level deeper."""
+        if self.depth >= MAX_AGENT_DEPTH:
+            raise ValueError(f"Sub-agent '{name}' not started: maximum agent nesting depth ({MAX_AGENT_DEPTH}) reached.")
+        result = await workflow.execute_child_workflow(
+            AgentWorkflow.run,
+            {
+                "config": config,
+                "depth": self.depth + 1,
+                "input": arguments,
+                "run_input": self.run_input,
+                "node_outputs": self.node_outputs,
+                "labels": self.labels,
+                "run": self.meta,
+            },
+            id=f"{self.id_prefix}/{name}-{call_id}",
+            execution_timeout=timedelta(minutes=15),  # never outlive the step waiting for it
+        )
+        self._charge(result.get("usage"))
+        self.trace[-1].setdefault("sub_agents", []).append(
+            {"tool": name, "steps": result.get("steps"), "stopped_reason": result.get("stopped_reason"),
+             "usage": result.get("usage")}
+        )
+        answer = {"text": result.get("text", "")}
+        if "json" in result:
+            answer["json"] = result["json"]
+        if result.get("stopped_reason") != "final":
+            answer["note"] = f"sub-agent stopped early ({result.get('stopped_reason')})"
+        return json.dumps(answer, default=str)
+
+
+def _default_tool_parameters(tool: dict[str, Any]) -> dict[str, Any]:
+    if tool.get("node", {}).get("type") == "agent":
+        # sub-agents receive a task description by default (use {{ $args.task }} in their prompt)
+        return {"type": "object", "required": ["task"],
+                "properties": {"task": {"type": "string", "description": "What the sub-agent should do."}}}
+    return {"type": "object", "properties": {}}
+
+
+@workflow.defn(name="AgentWorkflow")
+class AgentWorkflow:
+    """A sub-agent, run as a child workflow of the agent that delegated to it."""
+
+    def __init__(self) -> None:
+        self._loop: AgentLoop | None = None
+
+    @workflow.query(name="trace")
+    def get_trace(self) -> dict[str, Any]:
+        return {"steps": self._loop.trace, "usage": self._loop.usage} if self._loop else {}
+
+    @workflow.run
+    async def run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._loop = AgentLoop(
+            payload["config"],
+            depth=int(payload["depth"]),
+            current_input=payload.get("input"),
+            run_input=payload.get("run_input"),
+            node_outputs=payload.get("node_outputs") or {},
+            labels=payload.get("labels") or {},
+            meta=payload.get("run") or {},
+            id_prefix=workflow.info().workflow_id,
+        )
+        output = await self._loop.run()
+        output["trace"] = self._loop.trace
+        return output
 
 
 class _NodeFailed(Exception):
