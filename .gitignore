@@ -36,3 +36,6 @@ Thumbs.db
 
 # --- uploaded files (local storage backend) ---
 storage/
+
+# --- separate Next.js verification build output ---
+.next-build/

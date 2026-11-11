@@ -2,9 +2,8 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { listGraphs, createGraph, type Graph } from "@/lib/api";
-
-type Item = { id: string; name: string; updatedAt: number; nodes: number };
+import { ApiError, createGraph, listGraphs, type Graph } from "@/lib/api";
+import { useSession } from "@/lib/session";
 
 const defaultGraphDefinition = {
   nodes: [
@@ -20,102 +19,90 @@ const defaultGraphDefinition = {
 
 export default function Home() {
   const router = useRouter();
+  const { status, workspace } = useSession();
   const [api, setApi] = useState<"checking" | "ok" | "down">("checking");
-  const [items, setItems] = useState<Item[]>([]);
+  const [graphs, setGraphs] = useState<Graph[] | null>(null);
+  const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     fetch("/api/health")
-      .then((r) => (r.ok ? setApi("ok") : setApi("down")))
+      .then((r) => setApi(r.ok ? "ok" : "down"))
       .catch(() => setApi("down"));
-
-    // Fetch workflows from Postgres database
-    listGraphs()
-      .then((graphs: Graph[]) => {
-        setItems(
-          graphs.map((g) => ({
-            id: String(g.id),
-            name: g.name,
-            updatedAt: new Date(g.updated_at).getTime(),
-            nodes: g.definition.nodes?.length ?? 0,
-          }))
-        );
-      })
-      .catch((err) => {
-        console.warn("Could not load graphs from Postgres, checking local storage as fallback:", err);
-        // Seamless fallback to legacy local storage if DB is initially connecting
-        try {
-          const PREFIX = "agentforge:graph:";
-          const found: Item[] = [];
-          for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
-            if (!key?.startsWith(PREFIX)) continue;
-            const g = JSON.parse(localStorage.getItem(key) ?? "{}");
-            found.push({
-              id: key.slice(PREFIX.length),
-              name: g.name ?? "Untitled",
-              updatedAt: g.updatedAt ?? 0,
-              nodes: g.nodes?.length ?? 0,
-            });
-          }
-          if (found.length > 0) {
-            setItems(found.sort((a, b) => b.updatedAt - a.updatedAt));
-          }
-        } catch {
-          /* ignore */
-        }
-      });
   }, []);
+
+  useEffect(() => {
+    if (status === "loading") return;
+    setGraphs(null);
+    setError("");
+    // signed in -> the selected workspace; signed out -> single-user mode (graphs without a workspace)
+    listGraphs(status === "signed-in" ? workspace?.id : undefined)
+      .then(setGraphs)
+      .catch((reason) => {
+        if (reason instanceof ApiError && reason.status === 401) {
+          router.replace("/login?next=/");  // AUTH_REQUIRED=true on the API
+          return;
+        }
+        setError(reason instanceof Error ? reason.message : "Could not load graphs.");
+        setGraphs([]);
+      });
+  }, [status, workspace?.id, router]);
+
+  const canEdit = status !== "signed-in" || workspace?.role !== "viewer";
 
   async function create() {
     setCreating(true);
+    setError("");
     try {
       const created = await createGraph({
         name: "New Agent Workflow",
         description: "Created in AgentForge",
         definition: defaultGraphDefinition,
+        workspace_id: status === "signed-in" ? workspace?.id ?? null : null,
       });
       router.push(`/editor/${created.id}`);
-    } catch (err) {
-      console.error("Failed to create graph in database:", err);
-      // Fallback
-      const id = Math.random().toString(36).slice(2, 10);
-      router.push(`/editor/${id}`);
-    } finally {
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not create the graph.");
       setCreating(false);
     }
   }
 
   return (
     <main className="container">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div className="page-head">
         <div>
-          <h1 style={{ margin: 0 }}>Your agents</h1>
-          <p className="muted">Workflows persisted in Postgres (JSONB storage).</p>
+          <h1 style={{ margin: 0 }}>{workspace ? workspace.name : "Your agents"}</h1>
+          <p className="muted">
+            {status === "signed-in"
+              ? `You are ${workspace?.role === "owner" ? "an owner" : `a ${workspace?.role}`} of this workspace.`
+              : "Single-user mode - sign in to use workspaces and teams."}
+          </p>
         </div>
-        <button className="btn primary" onClick={create} disabled={creating}>
-          {creating ? "Creating…" : "+ New graph"}
-        </button>
+        {canEdit && (
+          <button className="btn primary" onClick={() => void create()} disabled={creating || status === "loading"}>
+            {creating ? "Creating…" : "+ New graph"}
+          </button>
+        )}
       </div>
 
       <p>
-        Database:{" "}
+        API:{" "}
         <span className={`badge ${api === "ok" ? "ok" : api === "down" ? "err" : "wait"}`}>
-          {api === "ok" ? "Postgres connected" : api === "down" ? "not reachable" : "checking"}
+          {api === "ok" ? "connected" : api === "down" ? "not reachable" : "checking"}
         </span>
       </p>
+      {error && <p className="form-error" role="alert">{error}</p>}
 
       <div className="list">
-        {items.length === 0 && <p className="muted">No graphs yet. Create your first one.</p>}
-        {items.map((g) => (
+        {graphs === null && <p className="muted">Loading…</p>}
+        {graphs?.length === 0 && !error && <p className="muted">No graphs yet. Create your first one.</p>}
+        {graphs?.map((g) => (
           <Link key={g.id} href={`/editor/${g.id}`} className="card">
             <div>
               <strong>{g.name}</strong>
-              <div className="muted">ID: {g.id} · {g.nodes} nodes</div>
+              <div className="muted">ID: {g.id} · {g.definition.nodes?.length ?? 0} nodes</div>
             </div>
-            <span className="muted">
-              {g.updatedAt ? new Date(g.updatedAt).toLocaleString() : ""}
-            </span>
+            <span className="muted">{new Date(g.updated_at).toLocaleString()}</span>
           </Link>
         ))}
       </div>
