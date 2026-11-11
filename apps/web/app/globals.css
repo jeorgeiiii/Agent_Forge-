@@ -3,10 +3,10 @@
 @tailwind utilities;
 
 :root {
-  --bg-main: #0f111a;
-  --bg-panel: #1a1d27;
-  --bg-node: #252936;
-  --border-color: #2d3345;
+  --bg-main: #16181f;
+  --bg-panel: #1c1f2a;
+  --bg-node: #232736;
+  --border-color: #2f3446;
   --text-main: #e2e8f0;
   --text-muted: #94a3b8;
   --accent: #6366f1;
@@ -440,3 +440,87 @@ a.btn { text-decoration: none; display: inline-block; }
 .ge-role-chip:hover { border-color: #6366f1; }
 .ge-role-chip.active { background: rgba(99,102,241,.2); border-color: #818cf8; color: #e0e7ff; font-weight: 600; }
 .home-role { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 4px 0 12px; }
+
+/* ---------------------------------------------------------- editor page shell (app/editor/[gid]/page.tsx) */
+.ep-root { display: flex; flex-direction: column; height: 100vh; }
+.ep-header { height: 52px; flex-shrink: 0; background: #1c1f2a; border-bottom: 1px solid #2f3446; display: flex;
+  align-items: center; justify-content: space-between; padding: 0 16px; z-index: 20; }
+.ep-header-left { display: flex; align-items: center; gap: 12px; }
+.ep-back { text-decoration: none; color: #9aa3b5; font-size: 13px; font-weight: 500; }
+.ep-back:hover { color: #e5e7eb; }
+.ep-divider { color: #3a4052; }
+.ep-title { font-weight: 600; font-size: 15px; color: #e5e7eb; }
+.ep-pill { font-size: 12px; background: #232736; padding: 2px 8px; border-radius: 4px; color: #9aa3b5; }
+.ep-pill.ok { background: rgba(16,185,129,.14); color: #34d399; font-weight: 500; }
+.ep-tabs { display: flex; gap: 6px; }
+.ep-tab { padding: 6px 12px; border-radius: 6px; border: 1px solid #3a4052; background: #232736; color: #cbd5e1;
+  cursor: pointer; font-size: 13px; font-weight: 500; }
+.ep-tab:hover { border-color: #6366f1; }
+.ep-tab.active { background: #4f46e5; border-color: #4f46e5; color: #fff; }
+.ep-body { display: flex; flex: 1; height: calc(100vh - 52px); width: 100%; overflow: hidden; }
+.ep-canvas { flex: 1 1 100%; width: 100%; min-width: 0; height: 100%; position: relative; }
+.ep-canvas.split { flex: 1 1 58%; width: 58%; }
+.ep-chat { flex: 1 1 100%; width: 100%; height: 100%; display: flex; flex-direction: column; }
+.ep-chat.split { flex: 0 0 460px; width: 460px; min-width: 360px; border-left: 1px solid #2f3446; }
+
+/* ---------------------------------------------------------- Copilot chat (app/editor/[gid]/copilot-chat.tsx) */
+.cp-root { display: flex; flex-direction: column; height: 100%; background: #16181f; font-family: system-ui, sans-serif; }
+.cp-header { height: 56px; flex-shrink: 0; background: #1c1f2a; border-bottom: 1px solid #2f3446; display: flex;
+  align-items: center; justify-content: space-between; padding: 0 20px; }
+.cp-title { font-weight: 600; font-size: 16px; }
+.cp-muted { color: #9aa3b5; font-size: 13px; }
+.cp-scroll { flex: 1; overflow-y: auto; padding: 20px; }
+.cp-thread { max-width: 800px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+.cp-row { display: flex; justify-content: flex-start; }
+.cp-row.user { justify-content: flex-end; }
+.cp-bubble { padding: 12px 16px; border-radius: 12px; max-width: 85%; line-height: 1.5; font-size: 14px;
+  background: #232736; color: #e5e7eb; border: 1px solid #2f3446; }
+.cp-bubble.user { background: #4f46e5; color: #fff; border: none; }
+.cp-bubble.wide { width: 100%; }
+.cp-bubble.status { background: #1c1f2a; color: #9aa3b5; }
+.cp-text { white-space: pre-wrap; }
+.cp-cursor { display: inline-block; width: 6px; height: 14px; background: #4f46e5; margin-left: 4px; vertical-align: middle;
+  animation: cp-blink 1s steps(2) infinite; }
+@keyframes cp-blink { to { opacity: 0; } }
+.cp-thinking { color: #7c859a; font-style: italic; }
+.cp-error { color: #f87171; font-size: 13px; text-align: center; }
+.cp-preview { margin-top: 16px; padding: 16px; background: #1c1f2a; border-radius: 8px; border: 1px solid #2f3446; }
+.cp-preview-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.cp-preview-title { font-size: 12px; font-weight: 600; color: #9aa3b5; text-transform: uppercase; letter-spacing: .5px; }
+.cp-apply { background: #4f46e5; color: #fff; border: none; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; cursor: pointer; }
+.cp-preview-list { display: flex; flex-direction: column; gap: 8px; }
+.cp-preview-node { display: flex; align-items: center; gap: 12px; background: #232736; padding: 10px 12px; border-radius: 6px;
+  border-left: 4px solid #059669; }
+.cp-preview-type { font-weight: 600; font-size: 13px; width: 100px; color: #cbd5e1; }
+.cp-preview-label { font-size: 14px; flex: 1; }
+.cp-footer { border-top: 1px solid #2f3446; background: #1c1f2a; padding: 12px 16px; }
+.cp-quick { display: flex; gap: 6px; margin-bottom: 10px; overflow-x: auto; padding-bottom: 2px; }
+.cp-chip { background: #232736; border: 1px solid #2f3446; border-radius: 16px; padding: 4px 10px; font-size: 12px;
+  color: #cbd5e1; cursor: pointer; white-space: nowrap; font-weight: 500; }
+.cp-chip:hover:not(:disabled) { border-color: #6366f1; }
+.cp-chip:disabled { cursor: not-allowed; opacity: .6; }
+.cp-form { max-width: 800px; margin: 0 auto; display: flex; gap: 10px; }
+.cp-input { flex: 1; padding: 10px 14px; border-radius: 8px; border: 1px solid #3a4052; font-size: 13px; outline: none;
+  background: #14161f; color: #e5e7eb; }
+.cp-input:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,.22); }
+.cp-send { background: #4f46e5; color: #fff; border: none; border-radius: 8px; padding: 0 18px; font-weight: 600; font-size: 13px; cursor: pointer; }
+.cp-send:disabled { background: #3a4052; cursor: not-allowed; }
+
+/* ---------------------------------------------------------- page frame + polish
+   The body is a fixed-height column: site header on top, the page fills the rest.
+   Normal pages scroll inside themselves; the editor fills the space exactly. */
+body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+.header { flex-shrink: 0; }
+.ep-root { flex: 1; min-height: 0; height: auto; }
+.ep-body { flex: 1; min-height: 0; height: auto; }
+.container { flex: 1; min-height: 0; overflow-y: auto; width: 100%; max-width: none; box-sizing: border-box;
+  padding: 24px max(16px, calc((100% - 928px) / 2)); }
+.container.run-inspector { max-width: none; padding: 24px max(16px, calc((100% - 1068px) / 2)); }
+.auth-page { flex: 1; min-height: 0; overflow-y: auto; box-sizing: border-box; }
+.card { transition: border-color .15s, transform .15s, box-shadow .15s; }
+.card:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(0,0,0,.35); }
+.panel-box, .stat, .auth-card { box-shadow: 0 4px 14px rgba(0,0,0,.25); }
+.run-table tbody tr:hover { background: rgba(99,102,241,.06); }
+.btn.primary { background: linear-gradient(180deg, #6366f1, #4f46e5); }
+.input-field { background: #14161f; border-color: #343a4d; }
+.input-field:focus { box-shadow: 0 0 0 3px rgba(99,102,241,.22); }

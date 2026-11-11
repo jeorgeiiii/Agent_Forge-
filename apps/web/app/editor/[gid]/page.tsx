@@ -1,523 +1,78 @@
 "use client";
-
-import { use, useState, useEffect, useRef } from "react";
+/**
+ * Editor page - /editor/[gid]
+ *
+ * Layout:  top bar (back link, title, view tabs)
+ *          + the canvas (./graph-editor.tsx) and/or the Copilot chat (./copilot-chat.tsx).
+ *
+ * Data flow between the two panels:
+ *   canvas  ──onGraphChange──▶ canvasGraph   ──▶ Copilot (so the AI knows what is on the board)
+ *   Copilot ──onApplyGraph──▶  aiAppliedGraph ──▶ canvas  (draws the AI's suggestion)
+ *
+ * Styles: the `.ep-*` classes in app/globals.css.
+ */
+import { use, useState } from "react";
+import type { GraphDefinition } from "@/lib/api";
 import GraphEditor from "./graph-editor";
-import { getChatHistory, type GraphDefinition } from "@/lib/api";
-import { readSSEStream } from "@/lib/sse";
+import CopilotChat from "./copilot-chat";
+import { toGraphDefinition, type AgentGraph } from "./copilot-api";
 
-type AgentNode = { id: string; type: string; label: string; config: any };
-type AgentGraph = { explanation: string; nodes: AgentNode[]; edges: { source: string; target: string }[] };
-type Message = {
-  role: "user" | "assistant";
-  content: string;
-  graph?: AgentGraph | null;
-};
+type View = "canvas" | "split" | "chat";
+
+/** The three view buttons in the top bar. */
+const VIEWS: { id: View; label: string }[] = [
+  { id: "canvas", label: "🎨 Canvas" },
+  { id: "split", label: "◫ Split View" },
+  { id: "chat", label: "💬 Copilot" },
+];
 
 export default function Page({ params }: { params: Promise<{ gid: string }> }) {
   const { gid } = use(params);
-  const [tab, setTab] = useState<"canvas" | "chat" | "split">("split");
-  const [canvasGraph, setCanvasGraph] = useState<GraphDefinition | null>(null);
-  const [aiAppliedGraph, setAiAppliedGraph] = useState<GraphDefinition | null>(null);
-  const [lastAction, setLastAction] = useState<string>("");
+  const [view, setView] = useState<View>("split");
+  const [canvasGraph, setCanvasGraph] = useState<GraphDefinition | null>(null);       // latest canvas state
+  const [aiAppliedGraph, setAiAppliedGraph] = useState<GraphDefinition | null>(null); // last AI suggestion
+  const [lastAction, setLastAction] = useState("");
 
-  function handleApplyGraph(graph: AgentGraph) {
-    const formatted: GraphDefinition = {
-      nodes: graph.nodes.map((n) => ({
-        id: n.id,
-        type: n.type,
-        label: n.label,
-        config: n.config || {},
-      })),
-      edges: graph.edges,
-    };
-    setAiAppliedGraph(formatted);
+  /** Called when the Copilot suggests a workflow: draw it on the canvas. */
+  function applyGraph(graph: AgentGraph) {
+    setAiAppliedGraph(toGraphDefinition(graph));
     setLastAction("Canvas modified by AI Agent");
   }
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
-      <header
-        style={{
-          height: 52,
-          background: "#1c1f2a",
-          borderBottom: "1px solid #2f3446",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "0 16px",
-          zIndex: 20,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <a href="/" style={{ textDecoration: "none", color: "#9aa3b5", fontSize: 13, fontWeight: 500 }}>
-            ← Agents
-          </a>
-          <span style={{ color: "#3a4052" }}>|</span>
-          <span style={{ fontWeight: 600, fontSize: 15, color: "#e5e7eb" }}>AgentForge Studio</span>
-          <span style={{ fontSize: 12, background: "#232736", padding: "2px 8px", borderRadius: 4, color: "#9aa3b5" }}>
-            ID: {gid}
-          </span>
-          {lastAction && (
-            <span style={{ fontSize: 12, background: "rgba(16, 185, 129, 0.14)", color: "#34d399", padding: "2px 8px", borderRadius: 4, fontWeight: 500 }}>
-              ✨ {lastAction}
-            </span>
-          )}
-        </div>
-        <div style={{ display: "flex", gap: 6 }}>
-          <button
-            onClick={() => setTab("canvas")}
-            style={{
-              padding: "6px 12px",
-              borderRadius: 6,
-              border: "1px solid #3a4052",
-              background: tab === "canvas" ? "#4f46e5" : "#232736",
-              color: tab === "canvas" ? "#fff" : "#cbd5e1",
-              cursor: "pointer",
-              fontSize: 13,
-              fontWeight: 500,
-            }}
-          >
-            🎨 Canvas
-          </button>
-          <button
-            onClick={() => setTab("split")}
-            style={{
-              padding: "6px 12px",
-              borderRadius: 6,
-              border: "1px solid #3a4052",
-              background: tab === "split" ? "#4f46e5" : "#232736",
-              color: tab === "split" ? "#fff" : "#cbd5e1",
-              cursor: "pointer",
-              fontSize: 13,
-              fontWeight: 500,
-            }}
-          >
-            ◫ Split View
-          </button>
-          <button
-            onClick={() => setTab("chat")}
-            style={{
-              padding: "6px 12px",
-              borderRadius: 6,
-              border: "1px solid #3a4052",
-              background: tab === "chat" ? "#4f46e5" : "#232736",
-              color: tab === "chat" ? "#fff" : "#cbd5e1",
-              cursor: "pointer",
-              fontSize: 13,
-              fontWeight: 500,
-            }}
-          >
-            💬 Copilot
-          </button>
-        </div>
-      </header>
-
-      <div style={{ display: "flex", flex: 1, height: "calc(100vh - 52px)", width: "100%", overflow: "hidden" }}>
-        {(tab === "canvas" || tab === "split") && (
-          <div style={{ flex: tab === "split" ? "1 1 58%" : "1 1 100%", width: tab === "split" ? "58%" : "100%", minWidth: 0, height: "100%", position: "relative" }}>
-            <GraphEditor
-              graphId={gid}
-              externalGraph={aiAppliedGraph}
-              onGraphChange={(g) => setCanvasGraph(g)}
-            />
-          </div>
-        )}
-        {(tab === "chat" || tab === "split") && (
-          <div
-            style={{
-              flex: tab === "split" ? "0 0 460px" : "1 1 100%",
-              width: tab === "split" ? "460px" : "100%",
-              minWidth: tab === "split" ? 360 : 0,
-              height: "100%",
-              borderLeft: tab === "split" ? "1px solid #2f3446" : "none",
-              display: "flex",
-              flexDirection: "column",
-            }}
-          >
-            <ChatUI
-              gid={gid}
-              currentCanvasGraph={canvasGraph}
-              onApplyGraph={handleApplyGraph}
-            />
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ChatUI({
-  gid,
-  currentCanvasGraph,
-  onApplyGraph,
-}: {
-  gid: string;
-  currentCanvasGraph: GraphDefinition | null;
-  onApplyGraph: (graph: AgentGraph) => void;
-}) {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      role: "assistant",
-      content: "Hi! I am your Canvas Copilot. You can tell me in plain English how to build or modify your canvas. For example:\n• 'Add an HTTP node to call weather API'\n• 'Delete the template node'\n• 'Add a Slack notification node before the end node'",
-    },
-  ]);
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [msg, setMsg] = useState("");
-  const bottomRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
-
-  // Restore persistent conversation memory from PostgreSQL for this session
-  useEffect(() => {
-    let active = true;
-    getChatHistory(gid)
-      .then((stored) => {
-        if (!active || !stored || stored.length === 0) return;
-        const loaded: Message[] = stored.map((item) => ({
-          role: item.role as "user" | "assistant",
-          content: item.content,
-          graph: item.graph_data || null,
-        }));
-        setMessages(loaded);
-      })
-      .catch((err) => {
-        console.warn("Could not load chat memory from Postgres:", err);
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [gid]);
-
-  async function handleSendPrompt(promptText: string) {
-    if (!promptText.trim() || loading) return;
-
-    const userMsg: Message = { role: "user", content: promptText.trim() };
-    const placeholderMsg: Message = { role: "assistant", content: "" };
-    const newMessages = [...messages, userMsg];
-
-    setMessages([...newMessages, placeholderMsg]);
-    setInput("");
-    setLoading(true);
-    setMsg("");
-
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-        },
-        body: JSON.stringify({
-          prompt: userMsg.content,
-          sessionId: gid,
-          stream: true,
-          context: {
-            history: newMessages.slice(-20).map(({ role, content }) => ({ role, content })),
-            // Provide current canvas nodes & edges to the AI agent
-            currentGraph: currentCanvasGraph,
-          },
-        }),
-      });
-
-      if (!res.ok) {
-        let errText = `Chat request failed (HTTP ${res.status}).`;
-        try {
-          const errJson = await res.json();
-          if (errJson.error) errText = errJson.error;
-        } catch {}
-        throw new Error(errText);
-      }
-
-      const contentType = res.headers.get("content-type") || "";
-      if (contentType.includes("text/event-stream")) {
-        let accumulatedText = "";
-        await readSSEStream(
-          res,
-          (token) => {
-            accumulatedText += token;
-            setMessages((prev) => {
-              const updated = [...prev];
-              if (updated.length > 0) {
-                updated[updated.length - 1] = {
-                  role: "assistant",
-                  content: accumulatedText,
-                };
-              }
-              return updated;
-            });
-          },
-          ({ text, graph }) => {
-            if (graph) {
-              onApplyGraph(graph);
-            }
-            setMessages((prev) => {
-              const updated = [...prev];
-              if (updated.length > 0) {
-                updated[updated.length - 1] = {
-                  role: "assistant",
-                  content: text || accumulatedText,
-                  graph: graph || null,
-                };
-              }
-              return updated;
-            });
-            setLoading(false);
-          },
-          (errorMsg) => {
-            setMsg(`Error: ${errorMsg}`);
-            setLoading(false);
-          }
-        );
-      } else {
-        // Non-streaming fallback
-        const textData = await res.text();
-        let data: { text?: string; error?: string } = {};
-        try {
-          data = JSON.parse(textData);
-        } catch {
-          if (textData.includes("data:")) {
-            const lines = textData.split("\n");
-            let extracted = "";
-            for (const line of lines) {
-              if (line.startsWith("data:")) {
-                const s = line.slice(5).trim();
-                if (s && s !== "[DONE]") {
-                  try {
-                    const p = JSON.parse(s);
-                    if (p.type === "token") extracted += p.content;
-                    else if (p.type === "done") extracted = p.text || extracted;
-                  } catch {}
-                }
-              }
-            }
-            data = { text: extracted || textData };
-          } else {
-            data = { text: textData };
-          }
-        }
-
-        if (data.error) throw new Error(data.error);
-        const responseText = data.text;
-        if (typeof responseText !== "string" || !responseText) {
-          throw new Error("Chat API returned an empty response.");
-        }
-
-        let graph: AgentGraph | null = null;
-        try {
-          const parsed = JSON.parse(responseText);
-          if (
-            parsed &&
-            typeof parsed === "object" &&
-            Array.isArray(parsed.nodes) &&
-            Array.isArray(parsed.edges)
-          ) {
-            graph = parsed as AgentGraph;
-          }
-        } catch {
-          // Plain conversational message
-        }
-
-        if (graph) {
-          onApplyGraph(graph);
-        }
-
-        setMessages((prev) => {
-          const updated = [...prev];
-          if (updated.length > 0) {
-            updated[updated.length - 1] = {
-              role: "assistant",
-              content: graph ? graph.explanation : responseText,
-              graph: graph,
-            };
-          }
-          return updated;
-        });
-      }
-    } catch (err: unknown) {
-      setMsg(`Error: ${err instanceof Error ? err.message : "The chat request failed."}`);
-      // Remove empty placeholder message if request failed before streaming
-      setMessages((prev) => {
-        if (prev.length > 0 && prev[prev.length - 1].content === "") {
-          return prev.slice(0, -1);
-        }
-        return prev;
-      });
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  const quickPrompts = [
-    "Add HTTP node to call weather API",
-    "Add Slack alert node before End",
-    "Create email summarizer workflow",
-  ];
+  const showCanvas = view !== "chat";
+  const showChat = view !== "canvas";
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "#16181f", fontFamily: "system-ui, sans-serif" }}>
-      
-      {/* Header */}
-      <header style={{ height: 56, background: "#1c1f2a", borderBottom: "1px solid #2f3446", display: "flex", alignItems: "center", padding: "0 20px", justifyContent: "space-between" }}>
-        <div style={{ fontWeight: 600, fontSize: 16 }}>AgentForge Copilot</div>
-        <div style={{ color: "#9aa3b5", fontSize: 13 }}>Session: {gid}</div>
-      </header>
-
-      {/* Chat History */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "20px", display: "flex", flexDirection: "column", gap: 16 }}>
-        <div style={{ maxWidth: 800, width: "100%", margin: "0 auto", display: "flex", flexDirection: "column", gap: 16 }}>
-          
-          {messages.map((m, i) => (
-            <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
-              <div style={{
-                background: m.role === "user" ? "#4f46e5" : "#232736",
-                color: m.role === "user" ? "#fff" : "#e5e7eb",
-                padding: "12px 16px",
-                borderRadius: 12,
-                maxWidth: "85%",
-                border: m.role === "assistant" ? "1px solid #2f3446" : "none",
-                boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
-                lineHeight: 1.5,
-                fontSize: 14,
-                width: m.graph ? "100%" : "auto",
-              }}>
-                <div style={{ whiteSpace: "pre-wrap" }}>
-                  {m.content}
-                  {loading && i === messages.length - 1 && (
-                    <span style={{ display: "inline-block", width: 6, height: 14, background: "#4f46e5", marginLeft: 4, verticalAlign: "middle" }} />
-                  )}
-                  {!m.content && loading && i === messages.length - 1 && (
-                    <span style={{ color: "#7c859a", fontStyle: "italic" }}>Thinking...</span>
-                  )}
-                </div>
-                
-                {/* Render the Agent Graph visually if it exists */}
-                {m.graph && (
-                  <div style={{ marginTop: 16, padding: 16, background: "#232736", borderRadius: 8, border: "1px solid #2f3446" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: "#9aa3b5", textTransform: "uppercase", letterSpacing: 0.5 }}>
-                        Generated Workflow
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => onApplyGraph(m.graph!)}
-                        style={{
-                          background: "#4f46e5",
-                          color: "#fff",
-                          border: "none",
-                          padding: "4px 10px",
-                          borderRadius: 6,
-                          fontSize: 11,
-                          fontWeight: 600,
-                          cursor: "pointer",
-                        }}
-                      >
-                        ⚡ Re-apply to Canvas
-                      </button>
-                    </div>
-                    
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      {m.graph.nodes.map((node, idx) => (
-                        <div key={node.id} style={{ 
-                          display: "flex", alignItems: "center", gap: 12, 
-                          background: "#1c1f2a", padding: "10px 12px", borderRadius: 6, 
-                          borderLeft: `4px solid ${
-                            node.type === "llm" ? "#6366f1" : 
-                            node.type === "tool" ? "#0891b2" : 
-                            node.type === "condition" ? "#d97706" : "#059669"
-                          }` 
-                        }}>
-                          <div style={{ fontWeight: 600, fontSize: 13, width: 100, color: "#cbd5e1" }}>
-                            {node.type.toUpperCase()}
-                          </div>
-                          <div style={{ fontSize: 14, flex: 1 }}>{node.label}</div>
-                          {idx < m.graph!.nodes.length - 1 && (
-                             <div style={{ color: "#7c859a", fontSize: 16 }}>↓</div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
-
-          {loading && (
-            <div style={{ display: "flex", justifyContent: "flex-start" }}>
-              <div style={{ background: "#1c1f2a", padding: "12px 16px", borderRadius: 12, border: "1px solid #2f3446", color: "#9aa3b5", fontSize: 14 }}>
-                Designing workflow...
-              </div>
-            </div>
-          )}
-          
-          {msg && <div style={{ color: "#f87171", fontSize: 13, textAlign: "center" }}>{msg}</div>}
-          <div ref={bottomRef} />
+    <div className="ep-root">
+      <header className="ep-header">
+        <div className="ep-header-left">
+          <a href="/" className="ep-back">← Agents</a>
+          <span className="ep-divider">|</span>
+          <span className="ep-title">AgentForge Studio</span>
+          <span className="ep-pill">ID: {gid}</span>
+          {lastAction && <span className="ep-pill ok">✨ {lastAction}</span>}
         </div>
-      </div>
-
-      {/* Input Area with Quick Canvas Prompts */}
-      <div style={{ borderTop: "1px solid #2f3446", background: "#1c1f2a", padding: "12px 16px" }}>
-        {/* Quick prompt buttons for canvas manipulation */}
-        <div style={{ display: "flex", gap: 6, marginBottom: 10, overflowX: "auto", paddingBottom: 2 }}>
-          {quickPrompts.map((qp, idx) => (
-            <button
-              key={idx}
-              type="button"
-              disabled={loading}
-              onClick={() => handleSendPrompt(qp)}
-              style={{
-                background: "#232736",
-                border: "1px solid #2f3446",
-                borderRadius: 16,
-                padding: "4px 10px",
-                fontSize: 12,
-                color: "#cbd5e1",
-                cursor: loading ? "not-allowed" : "pointer",
-                whiteSpace: "nowrap",
-                fontWeight: 500,
-              }}
-            >
-              🪄 {qp}
+        <div className="ep-tabs">
+          {VIEWS.map((v) => (
+            <button key={v.id} type="button" className={`ep-tab${view === v.id ? " active" : ""}`}
+                    aria-pressed={view === v.id} onClick={() => setView(v.id)}>
+              {v.label}
             </button>
           ))}
         </div>
+      </header>
 
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            handleSendPrompt(input);
-          }}
-          style={{ maxWidth: 800, margin: "0 auto", display: "flex", gap: 10 }}
-        >
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="e.g., Add an HTTP node before End to fetch user profile..."
-            disabled={loading}
-            style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid #3a4052", fontSize: 13, outline: "none" }}
-          />
-          <button
-            type="submit"
-            disabled={loading || !input.trim()}
-            style={{
-              background: input.trim() && !loading ? "#4f46e5" : "#3a4052",
-              color: "#fff",
-              border: "none",
-              borderRadius: 8,
-              padding: "0 18px",
-              fontWeight: 600,
-              fontSize: 13,
-              cursor: input.trim() && !loading ? "pointer" : "not-allowed",
-            }}
-          >
-            Send
-          </button>
-        </form>
+      <div className="ep-body">
+        {showCanvas && (
+          <div className={`ep-canvas${view === "split" ? " split" : ""}`}>
+            <GraphEditor graphId={gid} externalGraph={aiAppliedGraph} onGraphChange={setCanvasGraph} />
+          </div>
+        )}
+        {showChat && (
+          <div className={`ep-chat${view === "split" ? " split" : ""}`}>
+            <CopilotChat gid={gid} currentCanvasGraph={canvasGraph} onApplyGraph={applyGraph} />
+          </div>
+        )}
       </div>
     </div>
   );
