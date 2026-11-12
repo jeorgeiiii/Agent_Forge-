@@ -39,7 +39,7 @@ def provider(monkeypatch):
         })
 
     async def fake_credential(method, path, json=None, timeout=10):
-        assert path == "/internal/credentials/7"
+        assert path.split("?")[0] == "/internal/credentials/7"
         return {"type": "api_key", "data": {"api_key": "sk-test", "base_url": "https://api.groq.com/openai/v1"}}
 
     async def public_ok(url):

@@ -7,7 +7,7 @@ import type { Role } from "./roles";
 
 export type PageHelp = { what: string; examples: Record<Role, string> };
 
-export const PAGE_HELP: Record<"credentials" | "files" | "triggers", PageHelp> = {
+export const PAGE_HELP: Record<"credentials" | "files" | "triggers" | "team" | "usage" | "audit" | "retention", PageHelp> = {
   credentials: {
     what:
       "A saved key is the password or access code another app gives you. Save it here once, then pick it in any " +
@@ -45,6 +45,58 @@ export const PAGE_HELP: Record<"credentials" | "files" | "triggers", PageHelp> =
       tech: "Publish to register webhook endpoints and Temporal schedules for the latest compiled version.",
       analyst: "Publish a daily KPI workflow so the summary is ready before the morning meeting.",
       finance: "Publish an invoice-check workflow so every new bill is checked as soon as it arrives.",
+    },
+  },
+  team: {
+    what:
+      "Invite the people you work with. Owner = can do everything (people, settings). Editor = can build and run " +
+      "workflows. Viewer = can only look.",
+    examples: {
+      general: "Invite a colleague as Editor so you can build workflows together.",
+      sales: "Add your sales reps as Editors and the sales director as Viewer to follow results.",
+      marketing: "Give your content team Editor access and the agency Viewer access to review campaigns.",
+      tech: "RBAC per workspace: owner / editor / viewer. Invites are signed, single-use tokens that expire.",
+      analyst: "Let stakeholders open run results as Viewers without being able to change your workflows.",
+      finance: "Keep approvals safe: only the finance manager is Owner; clerks are Editors; auditors are Viewers.",
+    },
+  },
+  usage: {
+    what:
+      "See how much your workflows are used: how many runs, how many failed, how much AI text was used and " +
+      "what it cost. Limits stop surprise bills (0 = no limit).",
+    examples: {
+      general: "Check that last week's AI cost stayed within your budget.",
+      sales: "See which lead workflow runs most and what each follow-up email costs.",
+      marketing: "Compare the AI cost of the newsletter workflow with the social-post workflow.",
+      tech: "Aggregated runs, failures, LLM calls, tokens and cost by day / graph / model / trigger; quota headroom.",
+      analyst: "Group by day to spot usage trends, or by AI model to compare costs.",
+      finance: "Use the cost per workflow to charge each department for its AI spend.",
+    },
+  },
+  audit: {
+    what:
+      "A record of who did what and when - every login, change, deletion and approval. Entries are linked like a " +
+      "chain, so nobody can secretly edit or remove one. Only owners can see it.",
+    examples: {
+      general: "Find out who deleted a workflow yesterday.",
+      sales: "See who changed the discount-approval workflow before a big deal went out.",
+      marketing: "Check who published the campaign workflow and when.",
+      tech: "Hash-chained, append-only audit log with filters, chain verification and CSV export.",
+      analyst: "Export the log as a spreadsheet to review changes over the quarter.",
+      finance: "Show auditors every approval and change, and prove the record was never altered.",
+    },
+  },
+  retention: {
+    what:
+      "Choose how long old information is kept before it is cleaned up automatically. Shorter = more private and " +
+      "tidy; longer = more history to look back on.",
+    examples: {
+      general: "Keep run details for 30 days, then remove them automatically.",
+      sales: "Delete old chat conversations with leads after 90 days to respect their privacy.",
+      marketing: "Remove sign-up data from old campaigns after the campaign ends.",
+      tech: "Per-workspace TTL overrides for run payloads, run rows, memory, soft-deleted graphs and audit events.",
+      analyst: "Keep run history for a full year so you can compare year over year.",
+      finance: "Keep the activity log for 7 years (2555 days) to meet record-keeping rules.",
     },
   },
 };
@@ -97,4 +149,38 @@ export function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Plain names for each "data keeping" setting. */
+export const RETENTION_FIELDS: { key: "run_data_days" | "run_rows_days" | "memory_days" | "deleted_graph_days" | "audit_days";
+  label: string; hint: string; min: number }[] = [
+  { key: "run_data_days", label: "Run details", hint: "What went in and out of each step (inputs, answers, AI text).", min: 1 },
+  { key: "run_rows_days", label: "Run list", hint: "The list of runs with their status and cost. Must be at least as long as run details.", min: 1 },
+  { key: "memory_days", label: "Chat memory", hint: "What AI helpers remember from earlier chat messages.", min: 1 },
+  { key: "deleted_graph_days", label: "Deleted workflows", hint: "How long a deleted workflow can still be brought back. 0 = remove right away.", min: 0 },
+  { key: "audit_days", label: "Activity log", hint: "Security record of who did what. At least 30 days.", min: 30 },
+];
+
+/** Plain words for activity-log actions, e.g. "graph.publish" -> "Published a workflow". */
+const ACTION_WORDS: Record<string, string> = {
+  "auth.login": "Signed in", "auth.login_failed": "Failed sign-in", "auth.logout": "Signed out", "auth.signup": "Created an account",
+  "graph.create": "Created a workflow", "graph.update": "Changed a workflow", "graph.delete": "Deleted a workflow",
+  "graph.publish": "Published a workflow", "graph.unpublish": "Unpublished a workflow",
+  "graph.activate": "Turned triggers on", "graph.deactivate": "Paused triggers",
+  "run.start": "Started a run", "run.started": "A run started", "run.finished": "A run finished", "run.cancel": "Cancelled a run",
+  "run.retry": "Retried a run", "run.approve": "Approved a step", "run.reject": "Rejected a step",
+  "graph.rename": "Renamed a workflow", "graph.duplicate": "Copied a workflow", "graph.restore": "Restored a workflow",
+  "graph.rollback": "Went back to an older version", "credential.refresh": "Refreshed a sign-in key", "auth.logout_all": "Signed out everywhere",
+  "memory.clear_session": "Cleared a chat memory", "memory.clear_all": "Cleared all chat memory",
+  "api_key.create": "Created a developer key", "api_key.revoke": "Revoked a developer key",
+  "credential.create": "Saved a key", "credential.update": "Changed a key", "credential.delete": "Deleted a key",
+  "file.upload": "Uploaded a file", "file.delete": "Deleted a file",
+  "member.add": "Added a member", "member.role_change": "Changed a member's role", "member.remove": "Removed a member",
+  "invitation.create": "Invited someone", "invitation.accept": "Accepted an invitation", "invitation.revoke": "Cancelled an invitation",
+  "workspace.create": "Created the workspace", "workspace.update": "Renamed the workspace", "workspace.delete": "Deleted the workspace",
+  "workspace.restore": "Restored the workspace", "workspace.transfer_ownership": "Handed over ownership",
+  "retention.update": "Changed data keeping",
+};
+export function actionLabel(action: string): string {
+  return ACTION_WORDS[action] ?? action;
 }

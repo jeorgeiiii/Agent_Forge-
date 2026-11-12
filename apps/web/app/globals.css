@@ -280,6 +280,12 @@ body { margin: 0; background: var(--bg-main); color: var(--text-main); font-fami
 a.btn { text-decoration: none; display: inline-block; }
 .stack { display: flex; flex-direction: column; gap: 10px; }
 .switch-mode { text-align: center; margin: 0; }
+/* PAUSED: email-first company sign in (SSO step 2) - used by app/login/sso-login-form.tsx only */
+.auth-email-chip { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 12px;
+                   border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-node); font-size: 14px;
+                   overflow-wrap: anywhere; }
+.auth-note { margin: 0; font-size: 14px; line-height: 1.5; }
+.auth-alt { align-self: center; font-size: 14px; }
 .link-button { background: none; border: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
@@ -548,3 +554,47 @@ label.btn { cursor: pointer; }
   border-radius: 6px; padding: 6px 8px; word-break: break-all; flex: 1; min-width: 0; }
 .ge-full { display: block; margin-top: 6px; }
 select.input-field { appearance: auto; }
+
+/* ---------------------------------------------------------- settings: team, usage, activity, data keeping (step 5) */
+.settings-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 14px; border-bottom: 1px solid var(--border-color); }
+.settings-tab { padding: 8px 14px; color: var(--text-muted); text-decoration: none; font-size: 14px; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.settings-tab:hover { color: var(--text-main); }
+.settings-tab.active { color: #c7d2fe; border-bottom-color: #818cf8; font-weight: 600; }
+.inline-fields { display: flex; gap: 8px; flex-wrap: wrap; }
+.inline-fields .input-field { flex: 1 1 200px; width: auto; }
+.input-field.compact { padding: 6px 8px; width: auto; max-width: 100%; }
+.danger-zone { border-color: rgba(248,113,113,.35); }
+.nowrap { white-space: nowrap; }
+.limit { display: flex; flex-direction: column; gap: 4px; }
+.limit-head { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; flex-wrap: wrap; }
+.limit-track { height: 8px; background: #14161f; border: 1px solid var(--border-color); border-radius: 999px; overflow: hidden; }
+.limit-fill { height: 100%; background: #10b981; transition: width .3s; }
+.limit-fill.high { background: #f59e0b; } .limit-fill.full { background: #ef4444; }
+.retention-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 8px 0; border-bottom: 1px solid var(--border-color); }
+.retention-row:last-of-type { border-bottom: none; }
+.days-input { display: flex; align-items: center; gap: 6px; }
+.days-input .input-field { width: 100px; }
+label.ge-role-chip { display: inline-flex; align-items: center; gap: 5px; }
+.run-table td.row-actions { display: table-cell; }
+.run-table td.row-actions .btn { display: inline-flex; margin: 2px; }
+@media (max-width: 640px) { .run-table { display: block; overflow-x: auto; } }
+
+/* ---------- Integrations page (/integrations) ---------- */
+.int-toolbar { display: flex; flex-direction: column; gap: 10px; margin: 12px 0 16px; }
+.int-cats { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { background: var(--bg-node); border: 1px solid var(--border-color); color: var(--text-muted); border-radius: 999px;
+        padding: 4px 12px; font-size: 13px; cursor: pointer; }
+.chip.active, .chip:hover { color: var(--text-main); border-color: var(--accent); }
+.int-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 14px; }
+.int-card { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; padding: 16px;
+            display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.int-card p { margin: 0; font-size: 14px; }
+.int-head { display: flex; align-items: center; gap: 10px; }
+.int-head h2 { font-size: 16px; margin: 0; }
+.int-head .badge { margin-left: auto; }
+.int-logo { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; font-weight: 700;
+            background: color-mix(in srgb, var(--accent) 22%, var(--bg-node)); color: var(--text-main); flex-shrink: 0; }
+.int-actions { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; }
+.int-actions li { border: 1px solid var(--border-color); border-radius: 6px; padding: 2px 8px; display: flex; gap: 4px; align-items: center; }
+.int-connect .field span { font-size: 13px; color: var(--text-muted); }

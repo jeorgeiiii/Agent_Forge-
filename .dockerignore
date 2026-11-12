@@ -1,0 +1,25 @@
+# Keeps secrets, local data and build junk out of Docker images (build context = repo root).
+**/.env
+**/.env.*
+!**/.env.example
+**/*.pem
+**/*.key
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.sqlite3
+**/storage/
+**/node_modules/
+**/.next/
+**/.next-build/
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+**/.pytest_cache/
+**/*.tsbuildinfo
+.git/
+graphify-out/
+*.pdf
+test_step5_verification.py

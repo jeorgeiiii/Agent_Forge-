@@ -214,7 +214,7 @@ async def purge_deleted_graphs(db: Session, now: datetime, *, dry_run: bool = Fa
 
 async def purge_workspace(db: Session, workspace_id: int) -> int:
     """Permanently delete a workspace and everything in it. Returns graphs removed."""
-    from ..models import AuditEventRecord, InvitationRecord
+    from ..models import AuditEventRecord, InvitationRecord, SsoConnectionRecord, SsoDomainRecord, UserIdentityRecord
 
     removed = 0
     for graph in list(db.scalars(select(GraphRecord).where(GraphRecord.workspace_id == workspace_id))):
@@ -223,6 +223,10 @@ async def purge_workspace(db: Session, workspace_id: int) -> int:
     db.execute(delete(CredentialRecord).where(CredentialRecord.workspace_id == workspace_id))
     delete_files_where(db, FileRecord.workspace_id == workspace_id)
     db.execute(delete(InvitationRecord).where(InvitationRecord.workspace_id == workspace_id))
+    connection_ids = select(SsoConnectionRecord.id).where(SsoConnectionRecord.workspace_id == workspace_id)
+    db.execute(delete(UserIdentityRecord).where(UserIdentityRecord.connection_id.in_(connection_ids)))
+    db.execute(delete(SsoConnectionRecord).where(SsoConnectionRecord.workspace_id == workspace_id))
+    db.execute(delete(SsoDomainRecord).where(SsoDomainRecord.workspace_id == workspace_id))
     db.execute(delete(AuditEventRecord).where(AuditEventRecord.chain == f"ws:{workspace_id}"))
     db.execute(delete(AuditChainHead).where(AuditChainHead.chain == f"ws:{workspace_id}"))
     db.execute(delete(MembershipRecord).where(MembershipRecord.workspace_id == workspace_id))

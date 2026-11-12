@@ -358,3 +358,68 @@ class ChatMessageRecord(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     graph_data: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
+# --------------------------------------------------------------------------- #
+# SSO step 1 - company login connections, company email domains, linked identities
+# --------------------------------------------------------------------------- #
+
+
+class SsoConnectionRecord(Base):
+    """How a workspace's people log in through their company (one connection per workspace).
+
+    The client secret is encrypted with the credentials vault and never returned by the API.
+    """
+
+    __tablename__ = "sso_connections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), unique=True,
+                                              index=True, nullable=False)
+    protocol: Mapped[str] = mapped_column(String(10), nullable=False)          # oidc | saml
+    display_name: Mapped[str] = mapped_column(String(100), nullable=False)     # shown on the login button
+    issuer: Mapped[str] = mapped_column(String(500), default="", nullable=False)  # OIDC issuer / SAML entity id
+    client_id: Mapped[str] = mapped_column(String(300), default="", nullable=False)
+    encrypted_client_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    settings: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)  # endpoints, SAML cert, scopes...
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    enforce_sso: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)  # no password login for the domains
+    allow_jit: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)     # create users on first login
+    default_role: Mapped[str] = mapped_column(String(20), default="viewer", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class SsoDomainRecord(Base):
+    """An email domain a workspace claims (e.g. acme.com). Only *verified* domains send people to SSO.
+
+    Proof of ownership: a DNS TXT record `_agentforge-challenge.<domain>` = `agentforge-verify=<token>`.
+    Several workspaces may claim a domain, but only one can have it verified.
+    """
+
+    __tablename__ = "sso_domains"
+    __table_args__ = (UniqueConstraint("workspace_id", "domain", name="uq_sso_domain_workspace"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True, nullable=False)
+    domain: Mapped[str] = mapped_column(String(253), index=True, nullable=False)
+    verification_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class UserIdentityRecord(Base):
+    """Links an AgentForge user to their account at the company login (the IdP's stable subject id)."""
+
+    __tablename__ = "user_identities"
+    __table_args__ = (UniqueConstraint("connection_id", "subject", name="uq_identity_subject"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    connection_id: Mapped[int] = mapped_column(ForeignKey("sso_connections.id", ondelete="CASCADE"), index=True,
+                                               nullable=False)
+    subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

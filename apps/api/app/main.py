@@ -17,6 +17,7 @@ from .routes import (
     credentials,
     files,
     graphs,
+    integrations,
     internal,
     memory,
     messages,
@@ -24,10 +25,12 @@ from .routes import (
     public_triggers,
     retention,
     runs,
+    sso,
     usage,
     workspaces,
 )
 from .services.common import ServiceError
+from .services.production import check_production_settings
 from .utils import Timer, accept_request_id, configure_logging, log_structured_event, request_id_var
 
 
@@ -65,8 +68,9 @@ async def _retention_loop(hours: float) -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    initialize_database()
     settings = get_settings()
+    check_production_settings(settings)  # APP_ENV=production: stop here if anything is unsafe
+    initialize_database()
     tasks = []
     if settings.run_reconcile_interval_seconds > 0:
         tasks.append(asyncio.create_task(_reconcile_loop(settings.run_reconcile_interval_seconds)))
@@ -79,7 +83,20 @@ async def lifespan(_app: FastAPI):
 
 settings = get_settings()
 configure_logging(settings.log_format, settings.log_level)
-app = FastAPI(title="AgentForge API", version="0.2.0", lifespan=lifespan)
+IS_PRODUCTION = settings.app_env == "production"
+# the interactive API docs are handy locally but map the whole API for attackers: off in production
+app = FastAPI(title="AgentForge API", version="0.2.0", lifespan=lifespan,
+              docs_url=None if IS_PRODUCTION else "/docs", redoc_url=None if IS_PRODUCTION else "/redoc",
+              openapi_url=None if IS_PRODUCTION else "/openapi.json")
+
+# Sent on every API response (a route may set its own stricter value first, e.g. file downloads).
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",          # browsers must not guess file types
+    "X-Frame-Options": "DENY",                    # API pages can't be put inside someone else's frame
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+}
 
 app.add_middleware(
     CORSMiddleware,
@@ -101,6 +118,10 @@ async def request_context(request: Request, call_next):
             response = await call_next(request)
             status = response.status_code
         response.headers["X-Request-ID"] = request_id
+        for name, value in SECURITY_HEADERS.items():
+            response.headers.setdefault(name, value)
+        if IS_PRODUCTION:  # browsers remember to always use HTTPS for this site (1 year)
+            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
         return response
     finally:
         user = getattr(request.state, "user", None)
@@ -150,6 +171,8 @@ for router in (
     files.router,
     copilot.router,
     messages.router,
+    sso.router,
+    integrations.router,
 ):
     app.include_router(router, prefix="/api")
     app.include_router(router)
@@ -161,4 +184,30 @@ app.include_router(internal.router)
 
 @app.get("/health")
 def health():
+    """Liveness: the process is up. Load balancers restart the container when this fails."""
     return {"status": "ok"}
+
+
+@app.get("/health/ready")
+async def ready():
+    """Readiness: can this server do real work right now? 503 = send traffic elsewhere.
+
+    database: required (SELECT 1). redis: reported; required only with RATE_LIMIT_FAIL_CLOSED=true.
+    """
+    from sqlalchemy import text
+
+    from .rate_limiter import limiter
+
+    checks: dict[str, str] = {}
+    try:
+        with SessionLocal() as db:
+            db.execute(text("SELECT 1"))
+        checks["database"] = "ok"
+    except Exception as error:  # report, never crash the probe
+        log.error("Readiness: database check failed: %s", str(error)[:200])
+        checks["database"] = "unavailable"
+    redis = await limiter.get_redis()
+    checks["redis"] = "ok" if redis is not None else "unavailable"
+    healthy = checks["database"] == "ok" and (checks["redis"] == "ok" or not settings.rate_limit_fail_closed)
+    return JSONResponse(status_code=200 if healthy else 503,
+                        content={"status": "ok" if healthy else "unavailable", "checks": checks})

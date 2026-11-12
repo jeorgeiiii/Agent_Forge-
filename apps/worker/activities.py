@@ -7,12 +7,15 @@ import logging
 import time
 from typing import Any
 
+from urllib.parse import quote
+
 import httpx
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 import agentforge_core  # noqa: F401 - registers built-in node specs
 from agentforge_core.expressions import ExpressionError, build_expression_context, render_parameter, render_template
+from agentforge_core.connectors import auth_headers, build_request, get_connector, list_connectors, read_result
 from agentforge_core.registry import get_node_executor, register_node_executor
 from agentforge_core.runtime import evaluate_condition, merge_branches
 
@@ -129,12 +132,19 @@ def _filename_from(response: httpx.Response, url: str) -> str:
     return name
 
 
-async def _auth_headers(config: dict[str, Any]) -> dict[str, str]:
+async def fetch_credential(credential_id: Any, workflow_id: str) -> dict[str, Any]:
+    """Decrypted saved key from the API. The run's workflow_id lets the API refuse keys that
+    belong to a different workspace than the workflow being run."""
+    query = f"?workflow_id={quote(workflow_id, safe='')}" if workflow_id else ""
+    return await api_client.call("GET", f"/internal/credentials/{int(credential_id)}{query}")
+
+
+async def _auth_headers(config: dict[str, Any], workflow_id: str = "") -> dict[str, str]:
     credential_id = config.get("credential_id")
     auth_type = config.get("auth_type", "bearer" if credential_id else "none")
     if not credential_id or auth_type == "none":
         return {}
-    credential = await api_client.call("GET", f"/internal/credentials/{int(credential_id)}")
+    credential = await fetch_credential(credential_id, workflow_id)
     data: dict[str, Any] = credential.get("data") or {}
     secret = data.get("access_token") or data.get("token") or data.get("api_key") or data.get("value")
     if auth_type == "bearer":
@@ -162,7 +172,7 @@ async def _http(ctx: NodeContext) -> dict[str, Any]:
     if not isinstance(headers, dict) or any(str(k).lower() in RESTRICTED_HEADERS for k in headers):
         raise ValueError("HTTP node headers must be a mapping without restricted headers.")
     headers = {str(k): str(v) for k, v in headers.items()}
-    headers.update(await _auth_headers(ctx.raw_config))
+    headers.update(await _auth_headers(ctx.raw_config, ctx.workflow_id))
 
     body = ctx.param("body")
     request_kwargs: dict[str, Any] = {}
@@ -205,6 +215,58 @@ async def _http(ctx: NodeContext) -> dict[str, Any]:
         raise ValueError(f"HTTP node request failed: {error}") from error
 
 
+class ConnectorRetryableError(RuntimeError):
+    """Rate limited (429) or the service is down (5xx): Temporal retries the step with backoff."""
+
+
+CONNECTOR_TIMEOUT_SECONDS = 20
+_CONNECTOR_STATUS_HELP = {
+    401: "the saved key was rejected - check it is correct and not expired",
+    403: "the key is not allowed to do this - check its permissions/scopes",
+    404: "not found - check the IDs/names, and that the key can see this item",
+}
+
+
+def _connector_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(timeout=CONNECTOR_TIMEOUT_SECONDS, follow_redirects=False, trust_env=False)
+
+
+async def _connector(ctx: NodeContext) -> dict[str, Any]:
+    """Integration node (Slack, GitHub, ...): build the request from the catalog, add the saved key, send it."""
+    connector = get_connector(ctx.node["type"])
+    config = {name: ctx.param(name) for name in ctx.raw_config}  # resolve {{ expressions }}
+    request = build_request(connector, config)
+    await validate_public_http_url(request["url"])
+    headers = dict(request["headers"])
+    if connector.needs_key:
+        credential = await fetch_credential(ctx.raw_config.get("credential_id"), ctx.workflow_id)
+        data: dict[str, Any] = credential.get("data") or {}
+        key = data.get("api_key") or data.get("token") or data.get("access_token") or data.get("value")
+        if not key:
+            raise ValueError(f"The saved key for {connector.name} is empty.")
+        headers.update(auth_headers(connector, str(key)))
+    try:
+        async with _connector_client() as client:
+            response = await client.request(request["method"], request["url"], params=request["params"],
+                                            json=request.get("json"), headers=headers)
+    except httpx.HTTPError as error:
+        raise ConnectorRetryableError(f"{connector.name} could not be reached: {error}") from error
+    if len(response.content) > MAX_RESPONSE_BYTES:
+        raise ValueError(f"{connector.name} reply exceeded the 1 MB limit; ask for fewer results.")
+    if response.status_code == 429 or response.status_code >= 500:
+        raise ConnectorRetryableError(f"{connector.name} returned {response.status_code} (will retry).")
+    try:
+        payload: Any = response.json()
+    except ValueError:
+        payload = response.text
+    if response.status_code >= 400:
+        detail = payload.get("message") or payload.get("error") if isinstance(payload, dict) else str(payload)[:200]
+        hint = _CONNECTOR_STATUS_HELP.get(response.status_code, "the request was refused")
+        raise ValueError(f"{connector.name} {response.status_code}: {hint}. {str(detail or '')[:300]}".strip())
+    action = str(config.get("action"))
+    return {"main": {"ok": True, "status_code": response.status_code, "data": read_result(connector, action, payload)}}
+
+
 DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1"
 LLM_TIMEOUT_SECONDS = 60
 
@@ -231,7 +293,8 @@ class LLMProviderError(RuntimeError):
     """Transient provider failure (429 / 5xx / network) - Temporal may retry it."""
 
 
-async def chat_completion(credential_id: Any, base_url: Any, body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+async def chat_completion(credential_id: Any, base_url: Any, body: dict[str, Any],
+                          workflow_id: str = "") -> tuple[dict[str, Any], dict[str, Any]]:
     """POST one chat-completions request. Returns (first choice, usage).
 
     The API key is fetched from the vault here, inside the activity, so it never
@@ -239,7 +302,7 @@ async def chat_completion(credential_id: Any, base_url: Any, body: dict[str, Any
     """
     if not credential_id:
         raise ValueError("A credential_id with the provider API key is required.")
-    credential = await api_client.call("GET", f"/internal/credentials/{int(credential_id)}")
+    credential = await fetch_credential(credential_id, workflow_id)
     data: dict[str, Any] = credential.get("data") or {}
     api_key = data.get("api_key") or data.get("token") or data.get("access_token") or data.get("value")
     if not api_key:
@@ -294,7 +357,7 @@ async def _llm(ctx: NodeContext) -> dict[str, Any]:
     rendered = {k: ctx.param(k) for k in ("temperature", "max_tokens") if config.get(k) is not None}
     body = _sampling({**rendered, "json_output": config.get("json_output")}, {"model": str(ctx.param("model")), "messages": messages})
     await ensure_llm_quota(ctx.workflow_id)
-    choice, ctx.usage = await chat_completion(config.get("credential_id"), ctx.param("base_url"), body)
+    choice, ctx.usage = await chat_completion(config.get("credential_id"), ctx.param("base_url"), body, ctx.workflow_id)
     text = choice["message"].get("content") or ""
     result: dict[str, Any] = {
         "text": text,
@@ -320,6 +383,8 @@ register_node_executor("switch", _switch)
 register_node_executor("merge", _merge)
 register_node_executor("http", _http)
 register_node_executor("llm", _llm)
+for _connector_spec in list_connectors():
+    register_node_executor(_connector_spec.id, _connector)
 
 
 # --------------------------------------------------------------------------- #
@@ -359,7 +424,8 @@ async def llm_chat(request: dict[str, Any]) -> dict[str, Any]:
     _sampling(request, body)
     await ensure_llm_quota(request.get("workflow_id", ""))
     try:
-        choice, usage = await chat_completion(request.get("credential_id"), request.get("base_url"), body)
+        choice, usage = await chat_completion(request.get("credential_id"), request.get("base_url"), body,
+                                              request.get("workflow_id", ""))
     except ValueError as error:
         raise ApplicationError(str(error), type="ValueError", non_retryable=True) from error
     message = choice["message"]

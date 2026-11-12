@@ -1,0 +1,133 @@
+# AgentForge - production stack (one server). Usage, from the infra/ folder:
+#   cp production.env.example production.env     # fill in every value
+#   docker compose -f docker-compose.prod.yml --env-file production.env up -d --build
+# `${VAR:?...}` = compose refuses to start when a required secret is missing.
+# Put an HTTPS reverse proxy (Caddy, nginx, a cloud load balancer) in front of web (3000) and api (8000).
+
+x-api-env: &api-env
+  APP_ENV: production
+  DATABASE_URL: postgresql+psycopg://agentforge:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/agentforge
+  TEMPORAL_ADDRESS: temporal:7233
+  TEMPORAL_TASK_QUEUE: agentforge
+  REDIS_URL: redis://redis:6379/0
+  AUTH_REQUIRED: "true"
+  SESSION_COOKIE_SECURE: "true"
+  RATE_LIMIT_FAIL_CLOSED: "true"
+  LOG_FORMAT: json
+  TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+  CORS_ORIGINS: ${PUBLIC_APP_URL:?set PUBLIC_APP_URL}
+  PUBLIC_APP_URL: ${PUBLIC_APP_URL}
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL}
+  INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?set INTERNAL_API_TOKEN}
+  CREDENTIALS_MASTER_KEY: ${CREDENTIALS_MASTER_KEY:?set CREDENTIALS_MASTER_KEY}
+  FILE_SIGNING_KEY: ${FILE_SIGNING_KEY:-}
+  GROQ_API_KEY: ${GROQ_API_KEY:-}
+  GROQ_MODEL: ${GROQ_MODEL:-}
+  COPILOT_API_URL: ${COPILOT_API_URL:-}
+  COPILOT_API_KEY: ${COPILOT_API_KEY:-}
+  COPILOT_MODEL: ${COPILOT_MODEL:-}
+  MAIL_BACKEND: ${MAIL_BACKEND:-smtp}
+  MAIL_FROM: ${MAIL_FROM:-}
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USERNAME: ${SMTP_USERNAME:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+  S3_BUCKET: ${S3_BUCKET:-}
+  S3_REGION: ${S3_REGION:-us-east-1}
+  S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
+  S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+  S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: agentforge
+      POSTGRES_USER: agentforge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentforge -d agentforge"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # no "ports:" - the database is only reachable inside this network
+
+  temporal:
+    # durable Temporal (stores workflow history in Postgres), unlike `start-dev` which forgets on restart
+    image: temporalio/auto-setup:1.25.2
+    restart: unless-stopped
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: agentforge
+      POSTGRES_PWD: ${POSTGRES_PASSWORD}
+      POSTGRES_SEEDS: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    environment: *api-env
+    volumes:
+      - api-storage:/app/storage   # uploaded files when STORAGE_BACKEND=local
+    ports:
+      - "127.0.0.1:8000:8000"      # only the reverse proxy on this machine can reach it
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+
+  worker:
+    build:
+      context: ..
+      dockerfile: apps/worker/Dockerfile
+    restart: unless-stopped
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_TASK_QUEUE: agentforge
+      AGENTFORGE_API_URL: http://api:8000
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+    depends_on:
+      api:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+      args:
+        API_PROXY_URL: http://api:8000
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  redis-data:
+  api-storage:

@@ -260,3 +260,39 @@ def test_event_stream_requires_access(client):
     token = _signup(client, "outsider@example.com")
     owner_graph = client.post("/graphs", json={"name": "Owned"}, headers=_headers(_signup(client, "owner2@example.com"))).json()
     assert client.get(f"/graphs/{owner_graph['id']}/runs/1/events/stream", headers=_headers(token)).status_code == 404
+
+
+def test_integrations_catalog_and_saved_keys_stay_in_their_workspace(client):
+    """Integrations: catalog lists the services; a run may only use keys of its own workspace."""
+    catalog = client.get("/integrations")
+    assert catalog.status_code == 200
+    ids = {c["id"] for c in catalog.json()}
+    assert {"slack", "github", "notion", "airtable", "resend", "stripe"} <= ids
+    slack = client.get("/integrations/slack").json()
+    assert slack["key_help"] and any(a["id"] == "send_message" and a["writes"] for a in slack["actions"])
+    assert client.get("/integrations/nope").status_code == 404
+    assert any(t["type"] == "github" and t["category"] == "integration" for t in client.get("/node-types").json())
+
+    from app.db import SessionLocal
+    from app.models import GraphRecord, RunRecord
+
+    alice = _signup(client, "alice-keys@iso.test")
+    bob = _signup(client, "bob-keys@iso.test")
+    ws_a = client.get("/workspaces", headers=_headers(alice)).json()[0]["id"]
+    ws_b = client.get("/workspaces", headers=_headers(bob)).json()[0]["id"]
+    key_b = client.post("/credentials", json={"name": "Bob Slack", "type": "api_key", "data": {"api_key": "xoxb-bob"},
+                                              "workspace_id": ws_b}, headers=_headers(bob)).json()["id"]
+    with SessionLocal() as db:
+        graph = GraphRecord(name="alice flow", definition={"nodes": [], "edges": []}, workspace_id=ws_a)
+        db.add(graph)
+        db.flush()
+        db.add(RunRecord(graph_id=graph.id, workflow_id="wf-alice-iso", status="running", input={}))
+        db.commit()
+    internal = {"X-Internal-Token": "test-internal-token"}
+    stolen = client.get(f"/internal/credentials/{key_b}?workflow_id=wf-alice-iso", headers=internal)
+    assert stolen.status_code == 403 and "xoxb-bob" not in stolen.text
+    assert client.get(f"/internal/credentials/{key_b}?workflow_id=wf-unknown", headers=internal).status_code == 403
+    key_a = client.post("/credentials", json={"name": "Alice Slack", "type": "api_key", "data": {"api_key": "xoxb-a"},
+                                              "workspace_id": ws_a}, headers=_headers(alice)).json()["id"]
+    own = client.get(f"/internal/credentials/{key_a}?workflow_id=wf-alice-iso", headers=internal)
+    assert own.status_code == 200 and own.json()["data"] == {"api_key": "xoxb-a"}

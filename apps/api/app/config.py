@@ -1,11 +1,21 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+# Settings come from (later wins): the repo-root .env, then apps/api/.env, then real environment variables.
+# Absolute paths, so it works no matter which folder the API is started from.
+_API_DIR = Path(__file__).resolve().parents[1]
+ENV_FILES = (_API_DIR.parents[1] / ".env", _API_DIR / ".env")
 
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=ENV_FILES, env_file_encoding="utf-8", extra="ignore")
+
+    # development | production. production = refuse to start with unsafe settings (services/production.py),
+    # hide /docs, and send HSTS. Keep development on your laptop.
+    app_env: str = "development"
     database_url: str = "sqlite:///./agentforge.db"
     log_format: str = "text"  # text | json (structured logs for log pipelines)
     log_level: str = "INFO"
@@ -25,6 +35,12 @@ class Settings(BaseSettings):
     otel_exporter_otlp_headers: str = ""  # "Authorization=Basic xxx,x-tenant=abc"
     # --- Team & email (cluster 16) ---
     public_app_url: str = "http://localhost:3000"  # the web app; invite links point here
+    # --- Company login (SSO) - PAUSED. The code stays (services/sso.py, routes/sso.py) but is switched off:
+    # with SSO_ENABLED=false every /sso endpoint answers 404 and sign-in is plain email + password.
+    # Set SSO_ENABLED=true (and NEXT_PUBLIC_SSO_ENABLED=true for the web app) when SSO work resumes.
+    sso_enabled: bool = False
+    # SSO step 1: DNS-over-HTTPS resolver used to check domain-ownership TXT records (JSON API)
+    sso_dns_resolver_url: str = "https://cloudflare-dns.com/dns-query"
     invitation_ttl_hours: int = 24 * 7
     mail_backend: str = "console"  # console (log only) | smtp
     mail_from: str = "AgentForge <no-reply@localhost>"

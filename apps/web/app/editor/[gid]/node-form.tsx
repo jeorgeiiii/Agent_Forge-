@@ -62,11 +62,12 @@ function Field({
   const id = `nf-${name}`;
   const label = (
     <label htmlFor={id} className="nf-label">
-      {name.replace(/_/g, " ")}
+      {schema.title ?? name.replace(/_/g, " ")}
       {required && <span className="nf-required" title="required"> *</span>}
     </label>
   );
-  const help = FIELD_HELP[name] && <small className="nf-help">{FIELD_HELP[name]}</small>;
+  const helpText = schema.description ?? FIELD_HELP[name];
+  const help = helpText && <small className="nf-help">{helpText}</small>;
 
   if (name === "credential_id") {
     return (
@@ -88,8 +89,10 @@ function Field({
         {label}
         <select id={id} className="nf-input" value={value === undefined ? "" : String(value)}
                 onChange={(e) => onChange(e.target.value || undefined)}>
-          <option value="">- default -</option>
-          {schema.enum.map((option) => <option key={String(option)} value={String(option)}>{String(option)}</option>)}
+          <option value="">{name === "action" ? "- choose an action -" : "- default -"}</option>
+          {schema.enum.map((option) => (
+            <option key={String(option)} value={String(option)}>{schema["x-enum-labels"]?.[String(option)] ?? String(option)}</option>
+          ))}
         </select>
         {help}
       </div>
@@ -147,7 +150,7 @@ function Field({
   return (
     <div className="nf-field">
       {label}
-      {LONG_TEXT.has(name) ? (
+      {LONG_TEXT.has(name) || schema["x-multiline"] ? (
         <textarea id={id} className="nf-input" rows={name === "template" || name === "prompt" ? 5 : 3} value={text}
                   onChange={(e) => onChange(e.target.value === "" ? undefined : e.target.value)} />
       ) : (
@@ -166,9 +169,12 @@ export default function NodeForm({
 }) {
   const properties = schema.properties ?? {};
   if (!Object.keys(properties).length) return <p className="nf-help">This node has no settings.</p>;
+  // Integration nodes: a field marked with "x-actions" only shows when its action is chosen.
+  const visible = Object.entries(properties).filter(([, sub]) =>
+    !sub["x-actions"] || sub["x-actions"].includes(String(config.action ?? "")));
   return (
     <div className="nf-form">
-      {Object.entries(properties).map(([name, sub]) => (
+      {visible.map(([name, sub]) => (
         <Field key={name} name={name} schema={sub} required={!!schema.required?.includes(name)} value={config[name]}
                credentials={credentials}
                onChange={(value) => {

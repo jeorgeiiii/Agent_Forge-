@@ -1,12 +1,24 @@
 "use client";
-
+/**
+ * Sign-in page - /login
+ *
+ * Simple email + password sign in, and "Create an account" (name, email, password).
+ * URL options: ?mode=signup opens "create account", ?email=… prefills, ?next=/path returns there after.
+ *
+ * Company login (SSO) is paused: its email-first form lives in ./sso-login-form.tsx and is shown
+ * instead only when NEXT_PUBLIC_SSO_ENABLED=true (the API must also have SSO_ENABLED=true).
+ */
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 import { login, signup } from "@/lib/api";
 import { safeNext } from "@/lib/redirect";
 import { useSession } from "@/lib/session";
+import SsoLoginForm from "./sso-login-form";
 
-function LoginForm() {
+/** Read at build time; "true" switches the page back to the company-login (SSO) flow. */
+const SSO_ENABLED = process.env.NEXT_PUBLIC_SSO_ENABLED === "true";
+
+function PasswordLoginForm() {
   const params = useSearchParams();
   const router = useRouter();
   const { refresh } = useSession();
@@ -16,13 +28,15 @@ function LoginForm() {
   const [name, setName] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const signingUp = mode === "signup";
 
+  /** Signs in (or creates the account), reloads the session, then goes to ?next= or home. */
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
     setError("");
     try {
-      if (mode === "signup") await signup(email, password, name);
+      if (signingUp) await signup(email, password, name);
       else await login(email, password);
       await refresh();
       router.replace(safeNext(params.get("next")));
@@ -32,7 +46,12 @@ function LoginForm() {
     }
   }
 
-  const signingUp = mode === "signup";
+  /** Flips between "Sign in" and "Create an account". */
+  function switchMode() {
+    setMode(signingUp ? "signin" : "signup");
+    setError("");
+  }
+
   return (
     <main className="auth-page">
       <form className="auth-card" onSubmit={submit}>
@@ -47,7 +66,7 @@ function LoginForm() {
         <div className="field">
           <label htmlFor="email">Email</label>
           <input id="email" className="input-field" type="email" value={email} onChange={(e) => setEmail(e.target.value)}
-                 autoComplete="email" required maxLength={320} />
+                 autoComplete="email" required maxLength={320} autoFocus />
         </div>
         <div className="field">
           <label htmlFor="password">Password</label>
@@ -62,7 +81,7 @@ function LoginForm() {
         </button>
         <p className="muted switch-mode">
           {signingUp ? "Already have an account?" : "New to AgentForge?"}{" "}
-          <button type="button" className="link-button" onClick={() => { setMode(signingUp ? "signin" : "signup"); setError(""); }}>
+          <button type="button" className="link-button" onClick={switchMode}>
             {signingUp ? "Sign in" : "Create an account"}
           </button>
         </p>
@@ -74,7 +93,7 @@ function LoginForm() {
 export default function LoginPage() {
   return (
     <Suspense fallback={<main className="auth-page"><p className="muted">Loading…</p></main>}>
-      <LoginForm />
+      {SSO_ENABLED ? <SsoLoginForm /> : <PasswordLoginForm />}
     </Suspense>
   );
 }

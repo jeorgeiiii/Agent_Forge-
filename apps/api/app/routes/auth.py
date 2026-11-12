@@ -8,7 +8,7 @@ from starlette.concurrency import run_in_threadpool
 
 from ..rate_limiter import client_ip, enforce_limit, rate_limit
 from ..schemas import ApiKeyCreate, ApiKeyCreated, ApiKeyRead, LoginRequest, LoginResponse, SignupRequest, UserRead
-from ..services import auth
+from ..services import auth, sso
 from ..services.audit import audit
 from ..services.common import ServiceError
 
@@ -32,6 +32,14 @@ def _set_cookie(response: Response, token: str) -> None:
     )
 
 
+def _refuse_if_sso_required(db: Session, email: str) -> None:
+    """SSO step 2 (paused): if this email's company requires company login, passwords are refused.
+    Does nothing while SSO_ENABLED=false - then everyone signs in with email + password."""
+    blocked_by = sso.password_login_blocked(db, email)
+    if blocked_by:
+        raise ServiceError(f"Your company requires signing in with {blocked_by}.", 403)
+
+
 def _login_response(db: Session, request: Request, response: Response, user: UserRecord) -> LoginResponse:
     token, session = auth.create_session(db, user.id, request.headers.get("user-agent", ""), _client_ip(request))
     _set_cookie(response, token)
@@ -41,6 +49,7 @@ def _login_response(db: Session, request: Request, response: Response, user: Use
 @router.post("/signup", response_model=LoginResponse, status_code=status.HTTP_201_CREATED,
              dependencies=[Depends(rate_limit(max_requests=5, window_seconds=60, strict=True))])
 def signup(payload: SignupRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    _refuse_if_sso_required(db, payload.email)
     user = auth.create_user(db, payload.email, payload.password, payload.name)
     audit(request, db, "auth.signup", user=user, resource_type="user", resource_id=user.id)
     return _login_response(db, request, response, user)
@@ -51,6 +60,7 @@ def signup(payload: SignupRequest, request: Request, response: Response, db: Ses
 async def login(payload: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     # Per-account limit too: stops slow password guessing spread over many IPs.
     await enforce_limit(f"email:{payload.email.strip().lower()}", "login", max_requests=10, window_seconds=300, strict=True)
+    _refuse_if_sso_required(db, payload.email)
     result = await run_in_threadpool(auth.check_login, db, payload.email, payload.password)  # scrypt is CPU-bound
     if not result.success or result.user is None:
         # failed logins are security-relevant: record the attempted email (never the password)

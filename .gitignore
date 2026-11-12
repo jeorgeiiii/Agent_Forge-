@@ -39,3 +39,9 @@ storage/
 
 # --- separate Next.js verification build output ---
 .next-build/
+
+# --- production secrets for docker-compose.prod.yml ---
+infra/production.env
+
+# --- local test login details (never commit) ---
+test-accounts.local.md

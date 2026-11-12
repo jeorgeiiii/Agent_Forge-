@@ -95,6 +95,16 @@ export const signup = (email: string, password: string, name = "") =>
   request<{ user: User }>("/auth/signup", { method: "POST", body: JSON.stringify({ email, password, name }) });
 export const login = (email: string, password: string) =>
   request<{ user: User }>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
+/** PAUSED (SSO) - used only by app/login/sso-login-form.tsx when NEXT_PUBLIC_SSO_ENABLED=true.
+ * Which way should this email sign in? "sso" = send them to their company's login page. */
+export type LoginMethod =
+  | { method: "password" }
+  | { method: "sso"; required: boolean; connection_id: number; display_name: string };
+export const discoverLogin = (email: string) =>
+  request<LoginMethod>("/auth/sso/discover", { method: "POST", body: JSON.stringify({ email }) });
+/** PAUSED (SSO). Where the "Continue with <company>" button goes. The API redirects to the company's login (SSO step 3). */
+export const ssoStartUrl = (connectionId: number, next: string) =>
+  `/api/auth/sso/${connectionId}/start?next=${encodeURIComponent(next)}`;
 export const logout = () => request<void>("/auth/logout", { method: "POST" });
 export const getMe = () => request<User>("/auth/me");
 export const listWorkspaces = () => request<Workspace[]>("/workspaces");
@@ -201,6 +211,12 @@ export type JsonSchema = {
   maximum?: number;
   minLength?: number;
   maxLength?: number;
+  // friendly form hints (integrations): label, help, which actions use the field, action names, big text box
+  title?: string;
+  description?: string;
+  "x-actions"?: string[];
+  "x-enum-labels"?: Record<string, string>;
+  "x-multiline"?: boolean;
 };
 
 export type NodeTypeSpec = {
@@ -216,6 +232,17 @@ export type NodeTypeSpec = {
 };
 
 export type CredentialSummary = { id: number; name: string; type: string; workspace_id: number | null };
+
+// ------------------------------------------------------------------ integrations
+
+export type IntegrationField = { name: string; label: string; type: string; required: boolean; help: string };
+export type IntegrationAction = { id: string; name: string; description: string; writes: boolean; fields: IntegrationField[] };
+export type Integration = {
+  id: string; name: string; category: string; description: string; needs_key: boolean;
+  key_label: string; key_help: string; docs_url: string; actions: IntegrationAction[];
+};
+/** Services workflows can use (Slack, GitHub ...). Each one is also a node in the editor. */
+export const listIntegrations = () => request<Integration[]>("/integrations");
 
 export const listNodeTypes = () => request<NodeTypeSpec[]>("/node-types");
 export const validateNodeConfig = (type: string, config: Record<string, unknown>) =>
@@ -347,3 +374,83 @@ export async function uploadFile(file: File, workspaceId?: number | null): Promi
   }
   return response.json();
 }
+
+// ------------------------------------------------------------------ settings: team (members + invitations)
+
+export type Role = Workspace["role"];
+export type Member = { user_id: number; email: string; name: string; role: Role };
+export type Invitation = { id: number; workspace_id: number; email: string; role: Role; status: string;
+  invited_by: number | null; created_at: string; expires_at: string; accepted_at: string | null };
+/** Returned once when inviting: the link to share if the email could not be sent. */
+export type InvitationCreated = Invitation & { accept_url: string; email_sent: boolean; email_error?: string };
+
+export const listMembers = (ws: number) => request<Member[]>(`/workspaces/${ws}/members`);
+export const changeMemberRole = (ws: number, userId: number, role: Role) =>
+  request<Member>(`/workspaces/${ws}/members/${userId}`, { method: "PATCH", body: JSON.stringify({ role }) });
+export const removeMember = (ws: number, userId: number) =>
+  request<void>(`/workspaces/${ws}/members/${userId}`, { method: "DELETE" });
+export const listInvitations = (ws: number) => request<Invitation[]>(`/workspaces/${ws}/invitations`);
+export const inviteMember = (ws: number, email: string, role: Role) =>
+  request<InvitationCreated>(`/workspaces/${ws}/invitations`, { method: "POST", body: JSON.stringify({ email, role }) });
+export const revokeInvitation = (ws: number, id: number) =>
+  request<Invitation>(`/workspaces/${ws}/invitations/${id}`, { method: "DELETE" });
+export const renameWorkspace = (ws: number, name: string) =>
+  request<{ id: number; name: string }>(`/workspaces/${ws}`, { method: "PATCH", body: JSON.stringify({ name }) });
+/** Hands the workspace to another member; you become an editor. */
+export const transferOwnership = (ws: number, userId: number) =>
+  request<unknown>(`/workspaces/${ws}/transfer-ownership`, { method: "POST", body: JSON.stringify({ user_id: userId }) });
+/** Soft delete - can be restored until the cleanup removes it. `confirmName` must match exactly. */
+export const deleteWorkspace = (ws: number, confirmName: string) =>
+  request<unknown>(`/workspaces/${ws}`, { method: "DELETE", body: JSON.stringify({ confirm_name: confirmName }) });
+
+// ------------------------------------------------------------------ settings: usage + limits
+
+export type UsageBucket = { runs: number; failed_runs: number; llm_calls: number; input_tokens: number;
+  output_tokens: number; cost_usd: number };
+export type UsageSummary = { group_by: string; totals: UsageBucket; groups: (UsageBucket & { key: string })[] };
+export type LimitsStatus = {
+  limits: { max_concurrent_runs: number; runs_per_day: number; tokens_per_minute: number; tokens_per_day: number };
+  usage: { concurrent_runs: number; runs_today: number; tokens_last_minute: number; tokens_today: number };
+};
+
+export const getUsage = (ws: number, groupBy: "day" | "graph" | "model" | "trigger", since?: string) =>
+  request<UsageSummary>(`/usage?workspace_id=${ws}&group_by=${groupBy}${since ? `&since=${encodeURIComponent(since)}` : ""}`);
+export const getLimits = (ws: number) => request<LimitsStatus>(`/workspaces/${ws}/limits`);
+
+// ------------------------------------------------------------------ settings: activity (audit) log
+
+export type AuditEvent = { id: number; at: string; action: string; outcome: string;
+  actor: { user_id: number | null; type: string; label: string }; resource: { type: string | null; id: string | null };
+  workspace_id: number | null; ip: string | null; details: Record<string, unknown> };
+
+/** One page of the activity log, newest first. `next` is passed back as beforeId for the next page. */
+export async function listAudit(ws: number, opts: { action?: string; outcome?: string; beforeId?: number | null } = {}) {
+  const q = new URLSearchParams({ limit: "50" });
+  if (opts.action) q.set("action", opts.action);
+  if (opts.outcome) q.set("outcome", opts.outcome);
+  if (opts.beforeId) q.set("before_id", String(opts.beforeId));
+  const response = await fetch(`/api/workspaces/${ws}/audit?${q}`, { credentials: "include", cache: "no-store" });
+  if (!response.ok) {
+    const body = await response.json().catch(() => undefined);
+    throw new ApiError(body?.detail?.message ?? body?.detail ?? `API request failed (${response.status}).`, response.status);
+  }
+  const next = response.headers.get("X-Next-Cursor");
+  return { events: (await response.json()) as AuditEvent[], next: next ? Number(next) : null };
+}
+/** Re-checks the log's fingerprint chain: proves nothing was edited or removed. */
+export const verifyAudit = (ws: number) => request<{ valid: boolean; checked: number; broken_at_id?: number | null; reason?: string }>(`/workspaces/${ws}/audit/verify`);
+export const auditExportUrl = (ws: number) => `/api/workspaces/${ws}/audit/export.csv`;
+
+// ------------------------------------------------------------------ settings: data keeping (retention)
+
+export type RetentionKey = "run_data_days" | "run_rows_days" | "memory_days" | "deleted_graph_days" | "audit_days";
+export type Retention = { effective: Record<RetentionKey, number>; overrides: Partial<Record<RetentionKey, number>>;
+  defaults: Record<RetentionKey, number> };
+
+export const getRetention = (ws: number) => request<Retention>(`/workspaces/${ws}/retention`);
+/** null for a key = go back to the default. */
+export const setRetention = (ws: number, changes: Partial<Record<RetentionKey, number | null>>) =>
+  request<Retention>(`/workspaces/${ws}/retention`, { method: "PATCH", body: JSON.stringify(changes) });
+/** Permanently deletes your account and personal data. Needs your password. */
+export const deleteMyAccount = (password: string) =>
+  request<unknown>("/auth/me", { method: "DELETE", body: JSON.stringify({ password }) });

@@ -126,6 +126,23 @@ export const NODE_HELP: Record<string, NodeHelp> = {
   },
 };
 
+// ---- integrations (connect them first on the Integrations page) ----
+const CONNECT_FIRST = " Connect it once on the Integrations page, then pick an action and the saved key here.";
+Object.assign(NODE_HELP, {
+  slack: { short: "Send Slack messages.", what: "Posts a message to a Slack channel, or lists channels." + CONNECT_FIRST,
+           example: "Tell #sales when a new lead arrives.", where: "Usually near the end, to tell people something happened." },
+  github: { short: "Create and read GitHub issues.", what: "Opens issues, adds comments and reads repositories." + CONNECT_FIRST,
+            example: "Open a bug issue when a customer reports a problem.", where: "Anywhere you need to file or read work items." },
+  notion: { short: "Add rows to Notion.", what: "Adds pages to a Notion database, searches it, or reads a page." + CONNECT_FIRST,
+            example: "Save every meeting summary as a row in the Notes database.", where: "Near the end, to keep a record." },
+  airtable: { short: "Read and write Airtable.", what: "Lists, adds and updates records in an Airtable table." + CONNECT_FIRST,
+              example: "Add each new signup to the Leads table.", where: "Wherever you read or store rows of data." },
+  resend: { short: "Send an email.", what: "Sends one email through Resend from your own domain." + CONNECT_FIRST,
+            example: "Email the customer a summary of their order.", where: "Near the end, to notify someone." },
+  stripe: { short: "Look up Stripe data (read-only).", what: "Finds customers, payments and your balance. It cannot charge or refund." + CONNECT_FIRST,
+            example: "Check whether a customer has paid before replying.", where: "Before a decision that depends on payments." },
+} satisfies Record<string, NodeHelp>);
+
 export const FALLBACK_HELP: NodeHelp = {
   short: "A building block for your workflow.",
   what: "This block does one job in your workflow.",

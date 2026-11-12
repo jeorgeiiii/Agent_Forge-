@@ -62,7 +62,9 @@ def file_bytes(file_id: str, workflow_id: str = "", db: Session = Depends(get_db
 
 
 @router.get("/credentials/{credential_id}")
-async def credential(credential_id: int, db: Session = Depends(get_db)):
+async def credential(credential_id: int, workflow_id: str | None = None, db: Session = Depends(get_db)):
+    """Decrypted key for the worker. workflow_id = the run asking; the key must be in that run's workspace."""
+    credentials.check_credential_for_run(db, credential_id, workflow_id)
     value = credentials.get_credential(db, credential_id)
     if value["type"] == "oauth2" and credentials.oauth_token_needs_refresh(value["data"]):
         record = await credentials.refresh_oauth_token(db, credential_id)

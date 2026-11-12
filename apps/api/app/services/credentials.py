@@ -141,6 +141,26 @@ def create_credential(
     return record
 
 
+def check_credential_for_run(db: Session, credential_id: int, workflow_id: str | None) -> None:
+    """A run may only use saved keys of its own workflow's workspace.
+
+    Without this, a workflow could reference another team's key by its number. workflow_id is required
+    when AUTH_REQUIRED=true (production); legacy single-user mode may omit it.
+    """
+    from ..models import GraphRecord, RunRecord
+
+    if not workflow_id:
+        if get_settings().auth_required:
+            raise Forbidden("The run is unknown, so its saved key can't be used.")
+        return
+    run = db.query(RunRecord).filter_by(workflow_id=workflow_id).one_or_none()
+    graph = db.get(GraphRecord, run.graph_id) if run else None
+    if graph is None:
+        raise Forbidden("The run is unknown, so its saved key can't be used.")
+    if load_credential(db, credential_id).workspace_id != graph.workspace_id:
+        raise Forbidden("This saved key belongs to another workspace.")
+
+
 def get_credential(db: Session, credential_id: int) -> dict[str, Any]:
     """Fetch and DECRYPT a credential. Only for the runtime (internal endpoint), never the UI."""
     record = load_credential(db, credential_id)

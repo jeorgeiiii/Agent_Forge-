@@ -5,5 +5,7 @@ inside Temporal workflow code and easy to unit test.
 """
 
 from .builtin_nodes import register_builtin_nodes
+from .connector_catalog import register_builtin_connectors
 
 register_builtin_nodes()
+register_builtin_connectors()  # integrations (see connector_catalog.py): Slack, GitHub, Notion, HubSpot ...
