@@ -154,8 +154,66 @@ async def test_agent_config_is_validated_at_compile_time():
     with pytest.raises(GraphValidationError, match="Duplicate tool name"):
         compile_graph(dup)
     bad_type = agent_graph(tools=[{**WEATHER_TOOL, "node": {"type": "webhook_trigger"}}])
-    with pytest.raises(GraphValidationError, match="must be one of"):
+    with pytest.raises(GraphValidationError, match="can.t be used as a tool"):
         compile_graph(bad_type)
     bad_tool_config = agent_graph(tools=[{**WEATHER_TOOL, "node": {"type": "http", "config": {}}}])
     with pytest.raises(GraphValidationError, match="url is required"):
         compile_graph(bad_tool_config)
+
+
+# ------------------------------------------------------------------ integrations as agent tools
+
+@pytest.fixture
+def services(monkeypatch):
+    """Fake third-party APIs (Wikipedia, Slack ...) used by integration tools."""
+    calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append({"url": str(request.url), "json": json.loads(request.content) if request.content else None,
+                      "auth": request.headers.get("authorization")})
+        if "wikipedia" in str(request.url):
+            return httpx.Response(200, json={"title": "Alan Turing", "extract": "English mathematician."})
+        return httpx.Response(200, json={"ok": True, "ts": "1.1"})
+
+    monkeypatch.setattr(activities, "_connector_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    return calls
+
+
+WIKI_TOOL = {"name": "wiki", "node": {"type": "wikipedia", "config": {"action": "summary"}}}
+
+
+async def test_agent_uses_an_integration_tool_and_cannot_change_fixed_settings(model, services):
+    script, requests = model
+    # the model also tries to switch the action and pass a key: both must be ignored
+    script += [tool_call("wiki", {"title": "Alan_Turing", "action": "search", "credential_id": 99}),
+               final("Alan Turing was an English mathematician.")]
+    result, _ = await run(agent_graph(tools=[WIKI_TOOL], prompt="Who was Alan Turing?"), {})
+
+    tool_def = requests[0]["tools"][0]["function"]
+    assert tool_def["name"] == "wiki" and tool_def["description"].startswith("Wikipedia: Article summary")
+    assert tool_def["parameters"]["required"] == ["title"] and set(tool_def["parameters"]["properties"]) == {"title"}
+    assert services[0]["url"] == "https://en.wikipedia.org/api/rest_v1/page/summary/Alan_Turing"  # still "summary"
+    assert "English mathematician." in requests[1]["messages"][-1]["content"]
+    assert result["output"]["text"] == "Alan Turing was an English mathematician."
+
+
+async def test_sending_tools_need_allow_writes_and_fixed_fields_win(model, services):
+    slack = {"name": "notify", "node": {"type": "slack", "config": {"action": "send_message", "credential_id": 4,
+                                                                    "channel": "C-FIXED"}}}
+    with pytest.raises(GraphValidationError, match="Allow tools that send or change things"):
+        compile_graph(agent_graph(tools=[slack]))
+
+    script, requests = model
+    script += [tool_call("notify", {"channel": "C-ATTACKER", "text": "Deploy finished"}), final("Sent.")]
+    result, _ = await run(agent_graph(tools=[slack], allow_writes=True, prompt="Tell the team"), {})
+    assert set(requests[0]["tools"][0]["function"]["parameters"]["properties"]) == {"text", "thread_ts"}
+    assert services[0]["json"] == {"channel": "C-FIXED", "text": "Deploy finished"}  # the AI can't redirect it
+    assert services[0]["auth"] == "Bearer sk-test"
+    assert result["output"]["text"] == "Sent."
+
+
+async def test_integration_tool_needs_an_action_and_a_key():
+    with pytest.raises(GraphValidationError, match="choose which Slack action"):
+        compile_graph(agent_graph(tools=[{"name": "s", "node": {"type": "slack", "config": {}}}]))
+    with pytest.raises(GraphValidationError, match="pick the saved GitHub key"):
+        compile_graph(agent_graph(tools=[{"name": "g", "node": {"type": "github", "config": {"action": "get_repo"}}}]))

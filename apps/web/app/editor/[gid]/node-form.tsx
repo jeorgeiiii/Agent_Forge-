@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { CredentialSummary, JsonSchema } from "@/lib/api";
 import { FIELD_HELP } from "@/lib/help";
+import IntegrationToolPicker from "./integration-tool-picker";
 
 type Config = Record<string, unknown>;
 
@@ -54,10 +55,10 @@ function JsonField({ id, value, onChange, rows = 4 }: { id: string; value: unkno
 }
 
 function Field({
-  name, schema, required, value, onChange, credentials,
+  name, schema, required, value, onChange, credentials, allowWrites = false,
 }: {
   name: string; schema: JsonSchema; required: boolean; value: unknown;
-  onChange: (value: unknown) => void; credentials: CredentialSummary[];
+  onChange: (value: unknown) => void; credentials: CredentialSummary[]; allowWrites?: boolean;
 }) {
   const id = `nf-${name}`;
   const label = (
@@ -142,6 +143,9 @@ function Field({
         {label}
         <JsonField id={id} value={value} onChange={onChange} rows={name === "tools" ? 8 : 4} />
         {help}
+        {name === "tools" && (
+          <IntegrationToolPicker tools={value} onAdd={onChange} credentials={credentials} allowWrites={allowWrites} />
+        )}
       </div>
     );
   }
@@ -176,7 +180,7 @@ export default function NodeForm({
     <div className="nf-form">
       {visible.map(([name, sub]) => (
         <Field key={name} name={name} schema={sub} required={!!schema.required?.includes(name)} value={config[name]}
-               credentials={credentials}
+               credentials={credentials} allowWrites={config.allow_writes === true}
                onChange={(value) => {
                  const next = { ...config, [name]: value };
                  if (value === undefined) delete next[name];

@@ -3,6 +3,7 @@
 import re
 from typing import Any
 
+from .connectors import get_connector, is_connector, tool_config_errors
 from .registry import NodeTypeSpec, register_config_validator, register_node_type, validate_node_config
 
 _STR = {"type": "string"}
@@ -100,6 +101,8 @@ BUILTIN_SPECS: list[NodeTypeSpec] = [
             "max_steps": {"type": "integer", "minimum": 1, "maximum": 50},
             "max_total_tokens": {"type": "integer", "minimum": 100},
             "json_output": {"type": "boolean"},
+            # integration tools that send or change things (Slack message, GitHub issue ...) need this
+            "allow_writes": {"type": "boolean"},
             # Conversation memory across runs, per chat session.
             "memory": {"type": "object", "properties": {
                 # window = last N messages | buffer = whole chat (token-trimmed) |
@@ -113,13 +116,15 @@ BUILTIN_SPECS: list[NodeTypeSpec] = [
                 "redact_pii": {"type": "boolean"},  # mask emails / phones / card numbers before saving
             }},
             "tools": {"type": "array", "items": {
-                "type": "object", "required": ["name", "description", "node"],
+                # description may be left out for integration tools (it is generated from the action)
+                "type": "object", "required": ["name", "node"],
                 "properties": {
                     "name": {"type": "string", "minLength": 1, "maxLength": 64},
                     "description": {"type": "string", "minLength": 1},
                     "parameters": {"type": "object"},  # JSON schema of the arguments
                     "node": {"type": "object", "required": ["type"], "properties": {
-                        "type": {"type": "string", "enum": list(AGENT_TOOL_NODE_TYPES)},
+                        # a built-in tool type (AGENT_TOOL_NODE_TYPES) or any integration (slack, wikipedia ...)
+                        "type": {"type": "string", "minLength": 1},
                         "config": {"type": "object"},
                     }},
                 },
@@ -192,9 +197,17 @@ def validate_agent_config(config: dict[str, Any]) -> list[str]:
             errors.append(f"Duplicate tool name '{name}'.")
         seen.add(name)
         node = tool.get("node") or {}
-        errors.extend(
-            f"tools[{index}] ({name}): {e}" for e in validate_node_config(node.get("type", ""), node.get("config") or {})
-        )
+        node_type = str(node.get("type", ""))
+        if is_connector(node_type):
+            problems = tool_config_errors(get_connector(node_type), node.get("config") or {},
+                                          bool(config.get("allow_writes")))
+        elif node_type in AGENT_TOOL_NODE_TYPES:
+            problems = validate_node_config(node_type, node.get("config") or {})
+            if not str(tool.get("description") or "").strip():
+                problems.append("description is required (tell the AI when to use this tool).")
+        else:
+            problems = [f"'{node_type}' can't be used as a tool."]
+        errors.extend(f"tools[{index}] ({name}): {e}" for e in problems)
     return errors
 
 

@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
 
-from .registry import NodeTypeSpec, register_config_validator, register_node_type
+from .registry import NodeTypeSpec, _validate, register_config_validator, register_node_type
 
 LINE_BREAKS = ("\r", "\n")  # a key or header name with these could inject extra HTTP headers
 BAD_HEADER_CHARS = (":", " ", *LINE_BREAKS)
@@ -274,3 +274,63 @@ def read_result(connector: Connector, action_id: str, payload: Any) -> Any:
     if key and isinstance(payload, dict):
         return payload.get(key)
     return payload
+
+
+# --------------------------------------------------------------------------- integrations as AI-agent tools
+#
+# A tool entry on an AI Agent:  {"name": "wiki", "node": {"type": "wikipedia", "config": {"action": "summary"}}}
+#   - YOU fix the action and the saved key (credential_id) - the AI can never choose or change them;
+#   - any other field you fill in is fixed too (e.g. always post to channel C123);
+#   - the AI fills in the remaining fields of that action as the tool's arguments.
+# Actions that send or change something (writes=True) need "allow_writes": true on the agent.
+
+
+def is_connector(node_type: str) -> bool:
+    return node_type in _CONNECTORS
+
+
+def _json_field(f: ConnectorField) -> dict[str, Any]:
+    schema: dict[str, Any] = {"type": _JSON_TYPE.get(f.type, f.type), "description": f.help or f.label}
+    if f.enum:
+        schema["enum"] = list(f.enum)
+    if f.type == "array":
+        schema["items"] = {"type": "string"}
+    return schema
+
+
+def tool_parameters(connector: Connector, config: dict[str, Any]) -> dict[str, Any]:
+    """JSON schema the AI sees: the action's fields that are not already fixed in the tool's config."""
+    action = connector.action(str(config.get("action", "")))
+    free = [f for f in action.fields if config.get(f.name) in (None, "")]
+    return {"type": "object", "properties": {f.name: _json_field(f) for f in free},
+            "required": [f.name for f in free if f.required]}
+
+
+def tool_description(connector: Connector, config: dict[str, Any]) -> str:
+    action = connector.action(str(config.get("action", "")))
+    return f"{connector.name}: {action.name}. {action.description}".strip()
+
+
+def merge_tool_arguments(connector: Connector, config: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any]:
+    """Final node config for one tool call: fixed settings always win; the AI may only fill the
+    action's own empty fields (it can't set action, credential_id or anything unknown)."""
+    action = connector.action(str(config.get("action", "")))
+    allowed = {f.name for f in action.fields if config.get(f.name) in (None, "")}
+    return {**config, **{k: v for k, v in arguments.items() if k in allowed}}
+
+
+def tool_config_errors(connector: Connector, config: dict[str, Any], allow_writes: bool) -> list[str]:
+    """Checks a tool entry when the workflow is saved (and again before each call)."""
+
+    try:
+        action = connector.action(str(config.get("action", "")))
+    except ValueError:
+        return [f"choose which {connector.name} action this tool runs (node.config.action)."]
+    errors: list[str] = []
+    if connector.needs_key and not config.get("credential_id"):
+        errors.append(f"pick the saved {connector.name} key (node.config.credential_id) - the AI never chooses keys.")
+    if action.writes and not allow_writes:
+        errors.append(f"'{action.name}' sends or changes something. Tick 'Allow tools that send or change things' "
+                      "(allow_writes) on the agent to let the AI use it.")
+    _validate(config, connector_schema(connector), "", errors)  # types of the fixed values
+    return errors

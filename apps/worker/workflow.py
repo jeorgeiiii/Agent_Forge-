@@ -20,6 +20,8 @@ with workflow.unsafe.imports_passed_through():
     from agentforge_core.memory import (DEFAULT_KEEP_RECENT, DEFAULT_MAX_TOKENS, estimate_tokens, memory_key,
                                         redact_pii, summary_request, trim_to_token_budget)
     from agentforge_core.builtin_nodes import MAX_AGENT_DEPTH  # supervisor -> worker -> sub-worker
+    from agentforge_core.connectors import (get_connector, is_connector, merge_tool_arguments, tool_config_errors,
+                                            tool_description, tool_parameters)
     from agentforge_core.expressions import ExpressionError, build_expression_context, render_parameter
     from agentforge_core.runtime import (
         final_output,
@@ -489,7 +491,7 @@ class AgentLoop:
         tool_defs = [
             {"type": "function", "function": {
                 "name": t["name"],
-                "description": t["description"],
+                "description": t.get("description") or _default_tool_description(t),
                 "parameters": t.get("parameters") or _default_tool_parameters(t),
             }}
             for t in tools.values()
@@ -580,6 +582,13 @@ class AgentLoop:
                 raise ValueError("Tool arguments must be a JSON object.")
             node_type = tool["node"]["type"]
             node_config = tool["node"].get("config") or {}
+            if is_connector(node_type):
+                # integration tool: re-check the safety rules, then let the AI fill only the free fields
+                connector = get_connector(node_type)
+                problems = tool_config_errors(connector, node_config, bool(self.config.get("allow_writes")))
+                if problems:
+                    raise ValueError(" ".join(problems))
+                node_config = merge_tool_arguments(connector, node_config, arguments)
             if node_type == "agent":
                 content = await self._run_sub_agent(name, call_id, node_config, arguments)
             else:
@@ -655,7 +664,23 @@ def _preview(value: Any, limit: int = 500) -> str:
     return text if len(text) <= limit else text[:limit] + "..."
 
 
+def _default_tool_description(tool: dict[str, Any]) -> str:
+    node = tool.get("node") or {}
+    if is_connector(str(node.get("type", ""))):
+        try:
+            return tool_description(get_connector(node["type"]), node.get("config") or {})
+        except ValueError:
+            pass
+    return tool.get("name", "tool")
+
+
 def _default_tool_parameters(tool: dict[str, Any]) -> dict[str, Any]:
+    node = tool.get("node") or {}
+    if is_connector(str(node.get("type", ""))):
+        try:  # the action's fields you did not fix yourself
+            return tool_parameters(get_connector(node["type"]), node.get("config") or {})
+        except ValueError:
+            return {"type": "object", "properties": {}}
     if tool.get("node", {}).get("type") == "agent":
         # sub-agents receive a task description by default (use {{ $args.task }} in their prompt)
         return {"type": "object", "required": ["task"],

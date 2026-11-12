@@ -1,7 +1,31 @@
 import asyncio
 import os
+from pathlib import Path
 
-from temporalio.client import Client
+
+def _load_env_files() -> None:
+    """Local runs: read KEY=VALUE lines from the repo-root .env, then apps/worker/.env (same files as the API).
+
+    Real environment variables always win, so Docker/production settings are never overridden.
+    Must run before importing activities/api_client, which read their settings at import time.
+    """
+    here = Path(__file__).resolve().parent
+    for path in (here.parents[1] / ".env", here / ".env"):
+        if not path.is_file():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key, value = key.strip(), value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+_load_env_files()
+
+from temporalio.client import Client  # noqa: E402
 from temporalio.worker import Worker
 
 from activities import (checkpoint_state, emit_events, execute_node, fire_schedule_trigger, llm_chat,

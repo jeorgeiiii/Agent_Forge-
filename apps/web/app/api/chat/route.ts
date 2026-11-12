@@ -1,31 +1,14 @@
 import { NextResponse } from "next/server";
 import { saveChatMessage } from "@/lib/api";
 import { checkRateLimit } from "@/lib/rate-limiter";
+import { buildSystemPrompt } from "./copilot-knowledge";
 
 type ChatMessage = {
   role: "user" | "assistant";
   content: string;
 };
 
-const SYSTEM_PROMPT = `You are AgentForge Copilot, an AI assistant and workflow canvas designer.
-You have the power to create and directly manipulate workflow canvas graphs based on user prompts.
-
-RULES:
-- For general conversation, questions, or greetings (e.g. "Hello", "How does this work?"), respond naturally and conversationally. Do NOT return a graph for casual conversation.
-- When the user asks to create, build, modify, add nodes to, remove nodes from, connect, or update the canvas/workflow:
-  1. If a CURRENT CANVAS STATE is provided below, modify that canvas (e.g. add the requested node, remove requested node, update node config, connect edges).
-  2. Return ONLY a valid JSON object in this exact shape:
-{
-  "explanation": "A concise explanation of the changes made to the canvas",
-  "nodes": [
-    { "id": "node_id", "type": "node_type", "label": "Node Label", "config": {} }
-  ],
-  "edges": [
-    { "source": "node_id_1", "target": "node_id_2" }
-  ]
-}
-Supported node types include: "start", "end", "template", "http", "llm", "tool", "condition", "trigger", "output".
-Always ensure node IDs are unique and edges connect the nodes in logical order.`;
+// The system prompt (product facts + live block list) is built in ./copilot-knowledge.ts
 
 const DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b";
 
@@ -197,7 +180,7 @@ export async function POST(request: Request) {
     const model = process.env.GROQ_MODEL || DEFAULT_GROQ_MODEL;
 
     // Append canvas context if available so AI can manipulate existing nodes & edges
-    let systemInstruction = SYSTEM_PROMPT;
+    let systemInstruction = await buildSystemPrompt();
     if (context?.currentGraph && typeof context.currentGraph === "object") {
       try {
         const graphSummary = JSON.stringify(context.currentGraph, null, 2);

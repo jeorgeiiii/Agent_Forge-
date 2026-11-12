@@ -36,8 +36,11 @@ import {
 import { BUTTON_HELP, nodeHelp } from "@/lib/help";
 import { ROLES, roleHelp, useRole } from "@/lib/roles";
 import NodeForm from "./node-form";
+import RunDialog, { findInputNames } from "./run-dialog";
+import RunResult from "./run-result";
 
-type NodeData = { label: string; nodeType: NodeType; config: Record<string, unknown> };
+// runStatus: set while a run started from the editor is shown (block turns green / red); never saved
+type NodeData = { label: string; nodeType: NodeType; config: Record<string, unknown>; runStatus?: string };
 type FlowNode = Node<NodeData, "agent">;
 
 const HIDDEN_TYPES = new Set(["trigger", "output"]); // legacy aliases kept only for old graphs
@@ -103,7 +106,7 @@ function AgentNode({ data, selected }: NodeProps<FlowNode>) {
 
   return (
     <div
-      className={`af-node${selected ? " selected" : ""}${isEntry ? " entry" : ""}`}
+      className={`af-node${selected ? " selected" : ""}${isEntry ? " entry" : ""}${data.runStatus ? ` run-${data.runStatus}` : ""}`}
       style={{
         ["--node-color" as string]: color,
         paddingRight: multi ? 76 : undefined,
@@ -287,24 +290,32 @@ function GraphEditorCanvas({
     }
   }
 
+  /** ▶ Run opens the Run window (run-dialog.tsx), which asks for the inputs the blocks use. */
+  const [runOpen, setRunOpen] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [activeRunId, setActiveRunId] = useState<number | null>(null);
+
+  /** Colours the canvas blocks with the run's step results (cleared when the result panel closes). */
+  const showNodeStatus = useCallback((statuses: Record<string, string>) => {
+    setNodes((current) => current.map((node) =>
+      node.data.runStatus === statuses[node.id] ? node : { ...node, data: { ...node.data, runStatus: statuses[node.id] } }));
+  }, [setNodes]);
+  const runInputNames = useMemo(() => findInputNames(nodes.map((n) => n.data.config)), [nodes]);
+
   /** Runs use the SAVED graph, so save first; then start and open the run inspector. */
-  async function runGraph() {
-    const text = window.prompt("Run input (JSON)", "{}");
-    if (text === null) return;
-    let input: Record<string, unknown>;
+  async function runGraph(input: Record<string, unknown>) {
+    setStarting(true);
     try {
-      input = JSON.parse(text || "{}");
-      if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error();
-    } catch {
-      setNotice({ text: "Run input must be a JSON object, e.g. {\"name\": \"Ada\"}.", kind: "error" });
-      return;
-    }
-    if (!(await saveGraph())) return;
-    try {
+      if (!(await saveGraph())) return;
       const run = await startRun(Number(graphId), input);
-      router.push(`/graphs/${graphId}/runs/${run.id}`);
+      setRunOpen(false);
+      showNodeStatus({});
+      setActiveRunId(run.id); // the result panel opens over the canvas - no page change
     } catch (error) {
       setNotice({ text: error instanceof Error ? error.message : "Could not start the run.", kind: "error" });
+      setRunOpen(false);
+    } finally {
+      setStarting(false);
     }
   }
 
@@ -375,7 +386,7 @@ Example: ${help(spec.type).example}`}>
             </button>
             <small className="ge-btn-help">{BUTTON_HELP.save}</small>
             <div className="ge-run-row">
-              <button type="button" className="ge-secondary" onClick={() => void runGraph()} disabled={!ready || saving}
+              <button type="button" className="ge-secondary" onClick={() => setRunOpen(true)} disabled={!ready || saving}
                       title={BUTTON_HELP.run}>▶ Run</button>
               <Link className="ge-secondary" href={`/graphs/${graphId}/runs`} title={BUTTON_HELP.history}>Run history</Link>
             </div>
@@ -386,6 +397,14 @@ Example: ${help(spec.type).example}`}>
             {notice && <p role="status" className={`ge-notice ge-${notice.kind}`}>{notice.text}</p>}
           </div>
         </aside>
+        {activeRunId !== null && (
+          <RunResult graphId={Number(graphId)} runId={activeRunId} onNodeStatus={showNodeStatus}
+                     onClose={() => { setActiveRunId(null); showNodeStatus({}); }} />
+        )}
+        {runOpen && (
+          <RunDialog inputNames={runInputNames} busy={starting} onCancel={() => setRunOpen(false)}
+                     onRun={(input) => void runGraph(input)} />
+        )}
 
         <div className="graph-canvas" style={{ flex: 1, height: "100%", minWidth: 0, minHeight: 0, position: "relative" }}>
           <ReactFlow
