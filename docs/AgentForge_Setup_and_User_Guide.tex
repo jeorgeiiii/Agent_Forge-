@@ -1,0 +1,650 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.2cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[table]{xcolor}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{listings}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{brand}{HTML}{3B5BDB}
+\definecolor{codebg}{HTML}{FFF8E1}
+\definecolor{codeline}{HTML}{F59F00}
+\definecolor{okc}{HTML}{2B8A3E}
+\definecolor{setupc}{HTML}{E67700}
+\definecolor{pausedc}{HTML}{C92A2A}
+\definecolor{deployc}{HTML}{1864AB}
+\definecolor{noteg}{HTML}{F1F3F5}
+
+% ---- status labels (used in every feature table) ----
+\newcommand{\sWork}{\colorbox{okc}{\textcolor{white}{\scriptsize\bfseries\ WORKING\ }}}
+\newcommand{\sSetup}{\colorbox{setupc}{\textcolor{white}{\scriptsize\bfseries\ NEEDS\ SETUP\ }}}
+\newcommand{\sPaused}{\colorbox{pausedc}{\textcolor{white}{\scriptsize\bfseries\ NOT\ WORKING\ }}}
+\newcommand{\sDeploy}{\colorbox{deployc}{\textcolor{white}{\scriptsize\bfseries\ DEPLOYMENT\ }}}
+
+\titleformat{\section}{\Large\bfseries\color{brand}}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.6em}{}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{AgentForge -- Setup \& User Guide}
+\fancyhead[R]{\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+
+% commands are highlighted in an amber box so they are easy to find
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{codeline},
+  breaklines=true,
+  columns=fullflexible,
+  keepspaces=true,
+  xleftmargin=4pt,
+  xrightmargin=4pt
+}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.5em}
+\renewcommand{\arraystretch}{1.25}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\newcommand{\env}[1]{\texttt{#1}}
+
+\newenvironment{important}
+  {\par\smallskip\noindent\begin{tabular}{|p{0.95\linewidth}|}\hline\rowcolor{noteg}\vspace{2pt}\textbf{Important: }}
+  {\vspace{2pt}\\\hline\end{tabular}\par\smallskip}
+
+\begin{document}
+
+% ------------------------------------------------------------------ title
+\begin{titlepage}
+  \centering
+  \vspace*{3cm}
+  {\Huge\bfseries\color{brand} AgentForge\par}
+  \vspace{0.6cm}
+  {\Large Setup Guide, User Guide \& User Journey\par}
+  \vspace{0.5cm}
+  {\large For running the project on your own machine\par}
+  \vspace{1.5cm}
+  \sWork\ \sSetup\ \sPaused\ \sDeploy\par
+  \vspace{0.3cm}
+  {\small Every feature in this document carries one of these four labels.}
+  \vfill
+  {\large \today}
+  \vspace{2cm}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+% ------------------------------------------------------------------ 1
+\section{About this document}
+
+AgentForge is a platform where you build \textbf{workflows}. A workflow is a set of
+blocks joined together, and the computer runs them step by step. Blocks can talk to
+AI models, read your company database, or send messages through tools like Slack.
+Anyone who does not want to use the editor can simply open a finished workflow, fill
+a few boxes, press one button and read the answer.
+
+\subsection{What the labels mean}
+
+\begin{longtable}{@{}L{3.4cm}L{12.2cm}@{}}
+\toprule
+\textbf{Label} & \textbf{Meaning} \\
+\midrule
+\endhead
+\sWork & Built, and covered by the automatic API tests (105 tests passed on 13 November 2026). It works on a local machine without any extra account. \\
+\sSetup & Built, but it will work only after you add something: an API key, an account of a third-party tool, or a login. Nothing is wrong with the code. \\
+\sPaused & Not available right now. The feature is switched off or intentionally put on hold. \\
+\sDeploy & Needed only when you put the product on a real server for many users (production phase). You can ignore it for local running. \\
+\bottomrule
+\end{longtable}
+
+\begin{important}
+These labels come from reading the code and running the \textbf{API test-suite}. The web
+screens, the worker and live third-party tools were \textbf{not} clicked through end to end
+for this document, and the worker and core test-suites were not run. Please treat
+``WORKING'' as ``implemented and tested at API level'' and do one quick manual check
+(Section~\ref{sec:verify}) after setup.
+\end{important}
+
+% ------------------------------------------------------------------ 2
+\section{What you need before you start}
+
+\begin{longtable}{@{}L{4cm}L{7cm}L{4.4cm}@{}}
+\toprule
+\textbf{Software} & \textbf{Why} & \textbf{Needed for} \\
+\midrule
+\endhead
+Git & To download the code from GitHub & Both options \\
+Docker Desktop (with WSL2 on Windows) & Runs database, Temporal, Redis, and also the full app & Option A (easy) \\
+Python 3.12 or newer & Backend (API and worker) & Option B only \\
+\texttt{uv} (Python tool) & Installs Python packages quickly & Option B only \\
+Node.js 20 or newer & Web app & Option B only \\
+\bottomrule
+\end{longtable}
+
+Internet is needed for the first setup (to download images and packages).
+
+% ------------------------------------------------------------------ 3
+\section{Step-by-step setup}
+
+\subsection{Step 1: Download the code}
+
+\begin{lstlisting}[language=bash]
+git clone https://github.com/jeorgeiiii/Agent_Forge-.git
+cd Agent_Forge-
+\end{lstlisting}
+
+\subsection{Step 2: Create your \texttt{.env} file}
+
+The \texttt{.env} file keeps all passwords and settings. It is \textbf{never} uploaded to
+GitHub, so every person creates their own.
+
+\begin{lstlisting}[language=bash]
+cp .env.example .env
+\end{lstlisting}
+
+On Windows PowerShell the same command is \texttt{Copy-Item .env.example .env}.
+
+Now generate the two secret values and paste them into \texttt{.env}:
+
+\begin{lstlisting}[language=bash]
+# 1) Vault key (for CREDENTIALS_MASTER_KEY)
+python -c "import os,base64;print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
+
+# 2) Internal token (for INTERNAL_API_TOKEN) - any long random text
+python -c "import secrets;print(secrets.token_urlsafe(48))"
+\end{lstlisting}
+
+\begin{important}
+Do not copy anyone else's \texttt{.env}. Do not put real keys in \texttt{.env.example}
+or in a chat or e-mail. If a key leaks, rotate it in the provider's console.
+\end{important}
+
+\subsection{Step 3A: Option A -- run everything with Docker (recommended)}
+
+One command starts the database, Temporal, Redis, API, worker and web app.
+
+\begin{lstlisting}[language=bash]
+docker compose -f infra/docker-compose.yml --env-file .env up --build
+\end{lstlisting}
+
+The first run takes several minutes. When the logs settle, open the URLs in
+Section~\ref{sec:urls}. To stop, press \texttt{Ctrl+C}; to start again later use the same
+command (without \texttt{--build} it is faster).
+
+\subsection{Step 3B: Option B -- run each part yourself (for developers)}
+
+Open \textbf{four} terminals, all inside the project folder.
+
+\textbf{Terminal 1 -- supporting services:}
+\begin{lstlisting}[language=bash]
+docker compose -f infra/docker-compose.yml up postgres temporal redis
+\end{lstlisting}
+Postgres is optional here: the default \texttt{.env} uses a local SQLite file, so you can
+leave out \texttt{postgres} and run only \texttt{temporal redis}.
+
+\textbf{Terminal 2 -- API (port 8000):}
+\begin{lstlisting}[language=bash]
+cd apps/api
+uv sync
+uv run uvicorn app.main:app --reload --port 8000
+\end{lstlisting}
+Database tables are created automatically at start-up (\env{DB\_AUTO\_MIGRATE=true} is the default).
+If you ever need to do it by hand: \texttt{uv run alembic upgrade head}.
+
+\textbf{Terminal 3 -- Worker:}
+\begin{lstlisting}[language=bash]
+cd apps/worker
+uv sync
+uv run python main.py
+\end{lstlisting}
+
+\textbf{Terminal 4 -- Web app (port 3000):}
+\begin{lstlisting}[language=bash]
+cd apps/web
+npm install
+npm run dev
+\end{lstlisting}
+
+\subsection{Web addresses once everything is running}\label{sec:urls}
+
+\begin{longtable}{@{}L{4.2cm}L{6cm}@{}}
+\toprule
+\textbf{What} & \textbf{Address} \\
+\midrule
+Web app (start here) & \url{http://localhost:3000} \\
+API documentation & \url{http://localhost:8000/docs} \\
+Temporal screen (run engine) & \url{http://localhost:8233} \\
+\bottomrule
+\end{longtable}
+
+\subsection{Quick check that setup is correct}\label{sec:verify}
+
+\begin{enumerate}[nosep]
+  \item Open \url{http://localhost:3000}. The line ``API: connected'' must be green.
+  \item Press \textbf{+ New workflow}, then \textbf{Run}, and give input such as \texttt{\{"name": "Rahul"\}}. You should see ``Hello Rahul!''.
+  \item If the run stays ``queued'', the worker or Temporal is not running.
+\end{enumerate}
+
+Optional: run the automatic tests of the API.
+\begin{lstlisting}[language=bash]
+cd apps/api
+uv sync --extra dev
+uv run pytest -q
+\end{lstlisting}
+
+% ------------------------------------------------------------------ 4
+\section{Database and connection details}
+
+\subsection{Which database is used}
+
+\begin{longtable}{@{}L{3.6cm}L{12cm}@{}}
+\toprule
+\textbf{Setup} & \textbf{Database} \\
+\midrule
+\endhead
+Option B default & \textbf{SQLite} file (\texttt{agentforge.db}). No installation, no password. \sWork \\
+Docker (Option A) & \textbf{PostgreSQL 17} inside Docker. Created automatically with the details below. \sWork \\
+Production & PostgreSQL with your own strong password. \sDeploy \\
+\bottomrule
+\end{longtable}
+
+\subsection{PostgreSQL details (from \texttt{infra/docker-compose.yml})}
+
+These are \textbf{local development defaults only}. They are already visible in the
+repository, so never reuse them on a real server.
+
+\begin{longtable}{@{}L{4.4cm}L{11cm}@{}}
+\toprule
+\textbf{Item} & \textbf{Value} \\
+\midrule
+\endhead
+Host / Port & \texttt{localhost} / \texttt{5432} \\
+Database name & \texttt{agentforge} \\
+User name & \texttt{agentforge} \\
+Password & \texttt{agentforge-local} \\
+Connection string (when API runs on your machine, Option B) & \texttt{postgresql+psycopg://agentforge:agentforge-local@localhost:5432/agentforge} \\
+Connection string (inside Docker, set automatically) & \texttt{postgresql+psycopg://agentforge:agentforge-local@postgres:5432/agentforge} \\
+\bottomrule
+\end{longtable}
+
+To use Postgres with Option B, put the first connection string in \texttt{.env} as
+\env{DATABASE\_URL} and restart the API. Check the connection with:
+
+\begin{lstlisting}[language=bash]
+docker compose -f infra/docker-compose.yml exec postgres psql -U agentforge -d agentforge -c "\dt"
+\end{lstlisting}
+
+\subsection{Other services and their addresses}
+
+\begin{longtable}{@{}L{3.2cm}L{6cm}L{6.2cm}@{}}
+\toprule
+\textbf{Service} & \textbf{Address} & \textbf{Password?} \\
+\midrule
+\endhead
+Temporal & \texttt{localhost:7233} (UI on 8233) & None (local dev mode) \\
+Redis & \texttt{redis://localhost:6379/0} & None (local) \\
+\bottomrule
+\end{longtable}
+
+\subsection{Your company's own database (optional)}
+
+AgentForge can \textbf{read} a company database (for customers, invoices, loans and
+so on). This is a separate database from the one above. Details are entered inside
+the app on the \textbf{Company data} page by a workspace owner, not in \texttt{.env}.
+The page shows the SQL for creating a read-only login. For a local trial,
+\texttt{company\_business\_db.sql} and \texttt{seed\_platform.sql} in the project folder
+look like sample data scripts. Their loading steps were not tested for this document,
+so please read each file's first lines before using it.
+
+\begin{important}
+By default, private/local database addresses are blocked
+(\env{DATA\_SOURCES\_ALLOW\_PRIVATE=false}). If your company database is on
+\texttt{localhost} or an internal IP, set it to \texttt{true} in \texttt{.env} for your
+local trial, and restart the API.
+\end{important}
+
+% ------------------------------------------------------------------ 5
+\section{Passwords and environment variables}
+
+\subsection{Ready-to-use local \texttt{.env}}
+
+Copy this, then replace the three \texttt{<...>} values. Everything else can stay as it is.
+
+\begin{lstlisting}[language=bash]
+# ---- core ----
+DATABASE_URL=sqlite:///./agentforge.db
+TEMPORAL_ADDRESS=localhost:7233
+TEMPORAL_TASK_QUEUE=agentforge
+CORS_ORIGINS=http://localhost:3000
+REDIS_URL=redis://localhost:6379/0
+NEXT_PUBLIC_API_URL=http://localhost:8000
+
+# ---- AI (optional, needed only for Copilot / AI blocks) ----
+GROQ_API_KEY=<your own key from console.groq.com>
+GROQ_MODEL=openai/gpt-oss-120b
+
+# ---- security ----
+AUTH_REQUIRED=false
+INTERNAL_API_TOKEN=<random text from Step 2>
+CREDENTIALS_MASTER_KEY=<vault key from Step 2>
+AGENTFORGE_API_URL=http://127.0.0.1:8000
+PUBLIC_BASE_URL=http://localhost:8000
+
+# ---- login by company (SSO) is paused ----
+SSO_ENABLED=false
+NEXT_PUBLIC_SSO_ENABLED=false
+\end{lstlisting}
+
+\subsection{All variables explained}
+
+\begin{longtable}{@{}L{4.6cm}L{2.2cm}L{4.4cm}L{4.4cm}@{}}
+\toprule
+\textbf{Variable} & \textbf{Phase} & \textbf{Local value} & \textbf{What it does} \\
+\midrule
+\endhead
+\env{DATABASE\_URL} & Local & \texttt{sqlite:///./agentforge.db} & Where data is stored \\
+\env{TEMPORAL\_ADDRESS} & Local & \texttt{localhost:7233} & Run engine address \\
+\env{TEMPORAL\_TASK\_QUEUE} & Local & \texttt{agentforge} & Queue name; keep same for API and worker \\
+\env{REDIS\_URL} & Local & \texttt{redis://localhost:6379/0} & Rate limits and cache \\
+\env{CORS\_ORIGINS} & Local & \texttt{http://localhost:3000} & Which web address may call the API \\
+\env{NEXT\_PUBLIC\_API\_URL} & Local & \texttt{http://localhost:8000} & API address used by the web app \\
+\env{AGENTFORGE\_API\_URL} & Local & \texttt{http://127.0.0.1:8000} & Worker $\rightarrow$ API. Use \texttt{127.0.0.1} on Windows \\
+\env{PUBLIC\_BASE\_URL} & Local & \texttt{http://localhost:8000} & Public API address (webhook and OAuth links) \\
+\env{INTERNAL\_API\_TOKEN} & Local & \textbf{your own random text} & Shared secret between API and worker. Docker fallback is \texttt{dev-internal-token-change-me}, which is fine only for local \\
+\env{CREDENTIALS\_MASTER\_KEY} & Local & \textbf{your own generated key} & Encrypts saved API keys. Without it, saving credentials will not work \\
+\env{AUTH\_REQUIRED} & Local & \texttt{false} & \texttt{false} = no login needed (single-user). \texttt{true} = login compulsory \\
+\env{GROQ\_API\_KEY} & Local & \textbf{your own key} & Powers Copilot (free tier available) \\
+\env{GROQ\_MODEL} & Local & \texttt{openai/gpt-oss-120b} & Model name \\
+\env{COPILOT\_API\_URL}, \env{COPILOT\_API\_KEY}, \env{COPILOT\_MODEL} & Local & empty & Use these instead of Groq for any OpenAI-compatible provider \\
+\env{SSO\_ENABLED}, \env{NEXT\_PUBLIC\_SSO\_ENABLED} & Local & \texttt{false} & Company login (paused) \\
+\env{DATA\_SOURCES\_ALLOW\_PRIVATE} & Local & \texttt{false} & Allow company DB on local/private network \\
+\env{DB\_AUTO\_MIGRATE} & Local & \texttt{true} & Creates/updates tables at start \\
+\midrule
+\env{POSTGRES\_PASSWORD} & Deploy & strong password & Production Postgres password \\
+\env{PUBLIC\_APP\_URL} & Deploy & your https address & Used in invitation links \\
+\env{FILE\_SIGNING\_KEY} & Deploy & random text & Signs file download links \\
+\env{TRUSTED\_PROXIES} & Deploy & your proxy IPs & Needed behind a load balancer \\
+\env{SESSION\_COOKIE\_SECURE} & Deploy & \texttt{true} & Required when site is on HTTPS \\
+\env{MAIL\_BACKEND}, \env{MAIL\_FROM}, \env{SMTP\_HOST}, \env{SMTP\_PORT}, \env{SMTP\_USERNAME}, \env{SMTP\_PASSWORD} & Deploy & \texttt{console} locally & Sends invitation e-mails. Locally, e-mails are only printed in the API log \\
+\env{STORAGE\_BACKEND} & Deploy & \texttt{local} & \texttt{local} (disk) or \texttt{s3} \\
+\env{S3\_BUCKET}, \env{S3\_REGION}, \env{S3\_ENDPOINT\_URL}, \env{S3\_ACCESS\_KEY\_ID}, \env{S3\_SECRET\_ACCESS\_KEY} & Deploy & empty & Cloud file storage \\
+\env{SUPABASE\_URL}, \env{SUPABASE\_ANON\_KEY}, \env{SUPABASE\_SERVICE\_ROLE\_KEY} & Deploy & empty & Hosted Supabase database (optional) \\
+\env{OTEL\_EXPORTER\_OTLP\_ENDPOINT} & Deploy & empty & Sends traces to a monitoring tool \\
+\env{LOG\_FORMAT} & Deploy & \texttt{text} & Use \texttt{json} for log tools \\
+\bottomrule
+\end{longtable}
+
+\subsection{Account passwords you will need}
+
+\begin{longtable}{@{}L{4.4cm}L{11cm}@{}}
+\toprule
+\textbf{Account} & \textbf{Detail} \\
+\midrule
+\endhead
+App login & With \env{AUTH\_REQUIRED=false} no login is needed. To use teams, sign up on the \textbf{Login} page with your own e-mail and a password you choose. There is no built-in default admin user. \\
+PostgreSQL (Docker) & User \texttt{agentforge}, password \texttt{agentforge-local} (local only) \\
+Groq / AI provider & Your own key from \url{https://console.groq.com} \\
+Third-party tools (Slack, GitHub, etc.) & Your own key or OAuth sign-in, saved in the \textbf{Credentials} page. Nothing is pre-filled. \\
+\bottomrule
+\end{longtable}
+
+\begin{important}
+Real keys that exist in the original developer's \texttt{.env} are not part of this
+document and are not on GitHub. You must create your own.
+\end{important}
+
+% ------------------------------------------------------------------ 6
+\section{Feature status}
+
+\subsection{Core platform}
+
+\begin{longtable}{@{}L{4.6cm}L{2.6cm}L{8.4cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Status} & \textbf{Note} \\
+\midrule
+\endhead
+Create, edit, duplicate, delete and restore workflows & \sWork & Covered by API tests \\
+Version history and rollback & \sWork & \\
+Run a workflow and see step results & \sWork & Needs worker and Temporal running \\
+Simple \textbf{Use} page (fill boxes, get result) & \sWork & \texttt{/use/<id>} \\
+Run history & \sWork & \\
+Schedule, Webhook and Manual triggers; Publish / Activate & \sWork & Schedules need worker running \\
+Approval block (pause until a person approves) & \sWork & \\
+If / Switch / Merge / Wait / Template / Set / HTTP blocks & \sWork & HTTP only to public addresses on port 80 and 443 \\
+File upload and download (local disk) & \sWork & 25 MB limit by default \\
+Team, roles (owner, editor, viewer) and invitations & \sWork & Invitation e-mail is printed in the API log unless SMTP is set \\
+Audit log with verification and CSV export & \sWork & \\
+Usage limits and data-retention clean-up & \sWork & \\
+Credential vault (encrypted keys) & \sSetup & Needs \env{CREDENTIALS\_MASTER\_KEY} \\
+\bottomrule
+\end{longtable}
+
+\subsection{AI features}
+
+\begin{longtable}{@{}L{4.6cm}L{2.6cm}L{8.4cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Status} & \textbf{Note} \\
+\midrule
+\endhead
+Copilot (build, edit, explain, fix a workflow) & \sSetup & Needs \env{GROQ\_API\_KEY} or \env{COPILOT\_API\_*} \\
+LLM block (one question, one answer) & \sSetup & Needs a saved AI credential \\
+Agent block (AI that uses tools in steps, with memory) & \sSetup & Needs a saved AI credential; writing is off unless \texttt{allow\_writes} \\
+AI agents using integrations as tools & \sSetup & Needs both AI key and that tool's credential \\
+Role templates (Treasury / Transaction Manager) & \sSetup & Needs AI key plus a connected company database and data dictionary \\
+\bottomrule
+\end{longtable}
+
+\subsection{Company data}
+
+\begin{longtable}{@{}L{4.6cm}L{2.6cm}L{8.4cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Status} & \textbf{Note} \\
+\midrule
+\endhead
+Connect company database (read-only) & \sWork & Tested at API level. You need a database to connect to. \\
+Browse tables and try a query & \sWork & Limits: 15 seconds, 1000 rows, 30 requests per minute \\
+Data dictionary (business names for tables) & \sWork & \\
+Company database block & \sWork & \\
+Private/local company DB address & \sSetup & Set \env{DATA\_SOURCES\_ALLOW\_PRIVATE=true} \\
+SQLite as company database & \sSetup & Set \env{DATA\_SOURCES\_ALLOW\_SQLITE=true}; for demos only \\
+\bottomrule
+\end{longtable}
+
+\subsection{Integrations (tools)}
+
+All tools below are built into the product, but \textbf{each one needs your own
+account and key}, so they are labelled \sSetup. None was tested live for this
+document.
+
+\begin{itemize}[nosep]
+  \item Messaging and project tools: Slack, Discord, GitHub, GitLab, Notion, Airtable, Asana, Linear, Monday, ClickUp, Typeform, HubSpot.
+  \item Google Sheets and Google Drive (sign in with Google OAuth; needs your own Google OAuth app).
+  \item E-mail and payments: Resend (send e-mail), Stripe (read-only).
+  \item Hosting and web: Vercel, Cloudflare (read-only), Webflow, Sentry, Brandfetch.
+  \item Search: Tavily, Serper, Exa, Firecrawl, Wikipedia.
+\end{itemize}
+
+\subsection{Not working, paused and deployment items}
+
+\begin{longtable}{@{}L{4.6cm}L{2.6cm}L{8.4cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{Status} & \textbf{Note} \\
+\midrule
+\endhead
+Company login (SSO) & \sPaused & Switched off (\env{SSO\_ENABLED=false}). Do not enable. \\
+Production Docker (\texttt{docker-compose.prod.yml}) & \sDeploy & Needs \texttt{production.env} (copy \texttt{infra/production.env.example}) \\
+Real e-mail sending (SMTP) & \sDeploy & Locally e-mails are only printed in the log \\
+Cloud file storage (S3 / R2 / MinIO) & \sDeploy & \\
+HTTPS cookies, trusted proxies, fail-closed rate limits & \sDeploy & \\
+Supabase row-level security & \sDeploy & Optional hosted database path \\
+Monitoring (OpenTelemetry, JSON logs) & \sDeploy & \\
+\bottomrule
+\end{longtable}
+
+% ------------------------------------------------------------------ 7
+\section{User guide}
+
+\subsection{Key words}
+
+\begin{longtable}{@{}L{3.4cm}L{12cm}@{}}
+\toprule
+\textbf{Word} & \textbf{Meaning} \\
+\midrule
+\endhead
+Workflow & A set of connected blocks, like a recipe the computer follows. \\
+Block & One step in a workflow. \\
+Run & One execution of a workflow, with its own result. \\
+Workspace & Your team's space. Roles: owner, editor, viewer. \\
+Credential & A saved and encrypted key or login for a tool. \\
+Company data & Your company's own database, connected in read-only mode. \\
+Copilot & An AI helper that builds and fixes workflows when you type what you want in plain English. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Block types}
+
+\begin{longtable}{@{}L{3.2cm}L{12.4cm}@{}}
+\toprule
+\textbf{Group} & \textbf{Blocks} \\
+\midrule
+\endhead
+Triggers & Start, Manual, Webhook (own URL), Schedule, Chat \\
+AI & LLM and Agent \\
+Logic & If, Switch, Merge, Wait, Approval \\
+Data & Template, Set, HTTP request, Company database \\
+Integrations & Slack, GitHub, Notion, Google Sheets, etc. (see Section 6) \\
+End & Finishes and returns the result \\
+\bottomrule
+\end{longtable}
+
+Every workflow must have one Start and one End. Blocks cannot form a loop.
+
+\subsection{Pages of the application}
+
+\begin{longtable}{@{}L{4.6cm}L{11cm}@{}}
+\toprule
+\textbf{Page} & \textbf{Purpose} \\
+\midrule
+\endhead
+Home & List of workflows, \textbf{+ New workflow}, and role picker (Sales, Marketing, Tech, Analyst, Finance) to show examples from your field \\
+Editor & Place and set up blocks, run, and talk to Copilot \\
+Use & Simple page for non-technical people \\
+Runs / Triggers & History of runs; schedules and webhook addresses \\
+Integrations and Credentials & Connect tools and save keys \\
+Company data & Connect database, view tables, edit data dictionary \\
+Files & Upload files for workflows \\
+Settings & Team, Usage, Activity log, Data retention \\
+\bottomrule
+\end{longtable}
+
+\subsection{Common tasks}
+
+\begin{enumerate}
+  \item \textbf{Make a first workflow.} Home $\rightarrow$ \textbf{+ New workflow} $\rightarrow$ click a block to change it $\rightarrow$ \textbf{Run}. \sWork
+  \item \textbf{Use AI.} Save your AI key in Credentials, add an LLM or Agent block, select that key. \sSetup
+  \item \textbf{Connect a tool.} Integrations $\rightarrow$ choose tool $\rightarrow$ add key $\rightarrow$ add that block in the workflow. \sSetup
+  \item \textbf{Read company data.} Owner opens \textbf{Company data}, runs the shown SQL once on the database to create a read-only user, connects, presses \textbf{Test}. \sWork
+  \item \textbf{Run on a schedule.} Add Schedule block (for example every Monday 9 a.m.), then press \textbf{Activate}. \sWork
+  \item \textbf{Take approval before an action.} Add an Approval block; the run waits until someone approves. \sWork
+  \item \textbf{Fix a failed run.} Open the run, look at the failed step, ask Copilot to explain or fix. \sSetup
+\end{enumerate}
+
+\subsection{Roles}
+
+\begin{longtable}{@{}L{2.6cm}L{13cm}@{}}
+\toprule
+\textbf{Role} & \textbf{Can do} \\
+\midrule
+\endhead
+Owner & Everything, including connecting company database and managing team \\
+Editor & Build and run workflows, browse company data \\
+Viewer & Only view; creation and edit buttons are hidden \\
+\bottomrule
+\end{longtable}
+
+% ------------------------------------------------------------------ 8
+\section{User journey}
+
+\subsection{Maya -- Finance owner (builder)}
+
+\begin{longtable}{@{}L{2.3cm}L{7.5cm}L{5.8cm}@{}}
+\toprule
+\textbf{Stage} & \textbf{What she does} & \textbf{How the product helps} \\
+\midrule
+\endhead
+1. Start & Signs up, creates workspace, chooses Finance role & Examples match her work \\
+2. Set up & Saves AI key; connects company database (read-only); fills data dictionary & Read-only wording builds trust \\
+3. Build & Makes a workflow with an Agent block and a Slack block, or asks Copilot to draft it & Copilot and block help save time \\
+4. Test & Presses Run and checks each step & Clear step-by-step result \\
+5. Automate & Adds Schedule trigger and an Approval block, then activates & A person stays in control \\
+6. Manage & Checks usage, audit log, invites team members & Cost control and accountability \\
+\bottomrule
+\end{longtable}
+
+\subsection{Raj -- Operations user (consumer)}
+
+\begin{longtable}{@{}L{2.3cm}L{13.3cm}@{}}
+\toprule
+\textbf{Stage} & \textbf{What he does} \\
+\midrule
+\endhead
+1. Receive & Gets a link like \texttt{/use/12} from Maya \\
+2. Fill & Types a few boxes (customer name, month) \\
+3. Run & Presses the button; sees ``Working\ldots{} step 2 of 3'' \\
+4. Read & Gets answer as text or table; presses \textbf{Run again} to reuse his inputs \\
+5. Report & If something looks wrong, informs Maya, who checks run history and uses Copilot's fix \\
+\bottomrule
+\end{longtable}
+
+\subsection{Senior developer -- reviewer / operator}
+
+\begin{longtable}{@{}L{2.3cm}L{13.3cm}@{}}
+\toprule
+\textbf{Stage} & \textbf{What he does} \\
+\midrule
+\endhead
+1. Install & Follows Section 3 (Docker option) and creates own \texttt{.env} \\
+2. Verify & Opens \texttt{:3000}, \texttt{:8000/docs}, \texttt{:8233}; runs the quick check and API tests \\
+3. Explore & Builds a sample workflow, runs it, inspects the run in the app and in Temporal \\
+4. Review & Checks credential vault, audit log, read-only data access, SSRF rules, and the DEPLOYMENT items in Section 6 \\
+\bottomrule
+\end{longtable}
+
+% ------------------------------------------------------------------ 9
+\section{Troubleshooting}
+
+\begin{longtable}{@{}L{5.4cm}L{10.2cm}@{}}
+\toprule
+\textbf{Problem} & \textbf{What to check} \\
+\midrule
+\endhead
+``API: not reachable'' on Home & API not running; check port 8000 and \texttt{.env} \\
+Run stays ``queued'' & Worker or Temporal is not running \\
+Cannot save credentials & \env{CREDENTIALS\_MASTER\_KEY} is empty or invalid \\
+Copilot / AI gives no answer & AI key missing or wrong, or rate limit reached \\
+Worker cannot reach API (Windows) & Use \texttt{127.0.0.1}, not \texttt{localhost}, in \env{AGENTFORGE\_API\_URL} \\
+Company database ``Test'' fails & Wrong host or password; read-only user lacks \texttt{SELECT}; private address blocked (see Section 4) \\
+Run stuck ``paused'' / ``waiting'' & An Approval block is waiting for a person \\
+Port already in use & Another program uses 3000, 8000, 5432, 6379 or 7233; close it or change the port \\
+Tables missing & Run \texttt{uv run alembic upgrade head} inside \texttt{apps/api} \\
+\bottomrule
+\end{longtable}
+
+\vfill
+\begin{center}
+\footnotesize\textit{Prepared from the project source code and the API test-suite. Screen labels and
+small details may differ slightly in the running application.}
+\end{center}
+
+\end{document}
