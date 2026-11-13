@@ -32,6 +32,7 @@ export default function Page({ params }: { params: Promise<{ gid: string }> }) {
   const [canvasGraph, setCanvasGraph] = useState<GraphDefinition | null>(null);       // latest canvas state
   const [aiAppliedGraph, setAiAppliedGraph] = useState<GraphDefinition | null>(null); // last AI suggestion
   const [lastAction, setLastAction] = useState("");
+  const [runRequest, setRunRequest] = useState(0);  // "▶ Run" pressed in the chat -> the canvas runs (any view)
 
   /** Called when the Copilot suggests a workflow: draw it on the canvas. */
   function applyGraph(graph: AgentGraph) {
@@ -63,14 +64,14 @@ export default function Page({ params }: { params: Promise<{ gid: string }> }) {
       </header>
 
       <div className="ep-body">
-        {showCanvas && (
-          <div className={`ep-canvas${view === "split" ? " split" : ""}`}>
-            <GraphEditor graphId={gid} externalGraph={aiAppliedGraph} onGraphChange={setCanvasGraph} />
-          </div>
-        )}
+        {/* the canvas stays loaded (hidden) in the Copilot-only view, so Copilot changes are saved and Run works */}
+        <div className={`ep-canvas${view === "split" ? " split" : ""}`} hidden={!showCanvas}>
+          <GraphEditor graphId={gid} externalGraph={aiAppliedGraph} onGraphChange={setCanvasGraph} runRequest={runRequest} />
+        </div>
         {showChat && (
           <div className={`ep-chat${view === "split" ? " split" : ""}`}>
-            <CopilotChat gid={gid} currentCanvasGraph={canvasGraph} onApplyGraph={applyGraph} />
+            <CopilotChat gid={gid} currentCanvasGraph={canvasGraph} onApplyGraph={applyGraph}
+                         onRun={() => setRunRequest((n) => n + 1)} />
           </div>
         )}
       </div>

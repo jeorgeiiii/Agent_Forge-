@@ -15,6 +15,7 @@ from .routes import (
     auth,
     copilot,
     credentials,
+    data_sources,
     files,
     graphs,
     integrations,
@@ -173,6 +174,7 @@ for router in (
     messages.router,
     sso.router,
     integrations.router,
+    data_sources.router,
 ):
     app.include_router(router, prefix="/api")
     app.include_router(router)
@@ -180,6 +182,7 @@ for router in (
 # Public trigger URLs and worker-only endpoints are mounted once, without /api.
 app.include_router(public_triggers.router)
 app.include_router(internal.router)
+app.include_router(data_sources.internal_router)
 
 
 @app.get("/health")

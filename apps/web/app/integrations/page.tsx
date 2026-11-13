@@ -7,8 +7,15 @@
  */
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { createCredential, listCredentials, listIntegrations, type CredentialSummary, type Integration } from "@/lib/api";
+import {
+  createCredential, listCredentials, listIntegrations, startIntegrationSignIn, type CredentialSummary, type Integration,
+} from "@/lib/api";
 import { useSession } from "@/lib/session";
+
+/** How saved keys are matched to a service: "Google Sheets - …" (sign-in services) or "Slack - …" (first word). */
+function keyPrefix(i: Integration): string {
+  return (i.oauth_provider ? `${i.name} -` : i.name.split(" ")[0]).toLowerCase();
+}
 
 export default function IntegrationsPage() {
   const { status, workspace } = useSession();
@@ -20,15 +27,35 @@ export default function IntegrationsPage() {
   const [category, setCategory] = useState("All");
   const [open, setOpen] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [signingIn, setSigningIn] = useState<string | null>(null);
 
   useEffect(() => { listIntegrations().then(setItems).catch((e) => setError(e.message)); }, []);
   /** Saved keys, to show which services already have one (matched by the name we give them). */
   const loadKeys = () => { listCredentials(workspaceId).then(setKeys).catch(() => setKeys([])); };
   useEffect(() => { if (status !== "loading") loadKeys(); }, [status, workspaceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /** "Sign in with Google": opens Google's page in a popup; the vault stores the account's tokens. */
+  async function signIn(i: Integration) {
+    setError("");
+    try {
+      const { authorize_url } = await startIntegrationSignIn(i.id, `${i.name} - ${workspace?.name ?? "main"}`, workspaceId);
+      const popup = window.open(authorize_url, "agentforge-signin", "width=520,height=680");
+      if (!popup) return setError("Your browser blocked the sign-in window. Allow pop-ups for this site and try again.");
+      setSigningIn(i.id);
+      const finish = () => { setSigningIn(null); loadKeys(); window.removeEventListener("message", onMessage); clearInterval(watch); };
+      const onMessage = (event: MessageEvent) => {
+        if (typeof event.data?.type === "string" && event.data.type.startsWith("agentforge-oauth-")) finish();
+      };
+      window.addEventListener("message", onMessage);
+      const watch = setInterval(() => { if (popup.closed) finish(); }, 800);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not start the sign-in.");
+    }
+  }
+
   const categories = useMemo(() => ["All", ...new Set((items ?? []).map((i) => i.category))], [items]);
   const connectedCount = (items ?? []).filter((i) => i.needs_key &&
-    keys.some((k) => k.name.toLowerCase().startsWith(i.name.split(" ")[0].toLowerCase()))).length;
+    keys.some((k) => k.name.toLowerCase().startsWith(keyPrefix(i)))).length;
   const shown = (items ?? []).filter((i) =>
     (category === "All" || i.category === category) &&
     `${i.name} ${i.description} ${i.actions.map((a) => a.name).join(" ")}`.toLowerCase().includes(query.trim().toLowerCase()));
@@ -55,7 +82,7 @@ export default function IntegrationsPage() {
       {items && shown.length === 0 && <p className="muted">No integration matches “{query}”.</p>}
       <div className="int-grid">
         {shown.map((i) => {
-          const saved = keys.filter((k) => k.name.toLowerCase().startsWith(i.name.split(" ")[0].toLowerCase()));
+          const saved = keys.filter((k) => k.name.toLowerCase().startsWith(keyPrefix(i)));
           return (
             <section key={i.id} className="int-card">
               <header className="int-head">
@@ -80,7 +107,12 @@ export default function IntegrationsPage() {
                              onDone={() => { setOpen(null); loadKeys(); }} onCancel={() => setOpen(null)} />
               ) : (
                 <div className="row-actions">
-                  {canEdit && i.needs_key && <button className="btn primary" type="button" onClick={() => setOpen(i.id)}>
+                  {canEdit && i.oauth_provider && (
+                    <button className="btn primary" type="button" disabled={signingIn === i.id} onClick={() => void signIn(i)}>
+                      {signingIn === i.id ? "Waiting for Google…" : saved.length ? "Connect another account" : "Sign in with Google"}
+                    </button>
+                  )}
+                  {canEdit && i.needs_key && !i.oauth_provider && <button className="btn primary" type="button" onClick={() => setOpen(i.id)}>
                     {saved.length ? "Add another key" : "Connect"}</button>}
                   {i.docs_url && <a className="btn" href={i.docs_url} target="_blank" rel="noreferrer">API docs ↗</a>}
                 </div>

@@ -239,10 +239,15 @@ export type IntegrationField = { name: string; label: string; type: string; requ
 export type IntegrationAction = { id: string; name: string; description: string; writes: boolean; fields: IntegrationField[] };
 export type Integration = {
   id: string; name: string; category: string; description: string; needs_key: boolean;
+  oauth_provider: string; oauth_scopes: string[]; // "google" = connect with "Sign in with Google"
   key_label: string; key_help: string; docs_url: string; actions: IntegrationAction[];
 };
 /** Services workflows can use (Slack, GitHub ...). Each one is also a node in the editor. */
 export const listIntegrations = () => request<Integration[]>("/integrations");
+/** "Sign in with Google" etc.: returns the provider page to open in a popup (scopes come from the integration). */
+export const startIntegrationSignIn = (connector: string, credentialName: string, workspaceId: number | null) =>
+  request<{ authorize_url: string }>("/credentials/oauth/start", {
+    method: "POST", body: JSON.stringify({ connector, credential_name: credentialName, workspace_id: workspaceId }) });
 
 export const listNodeTypes = () => request<NodeTypeSpec[]>("/node-types");
 export const validateNodeConfig = (type: string, config: Record<string, unknown>) =>
@@ -454,3 +459,33 @@ export const setRetention = (ws: number, changes: Partial<Record<RetentionKey, n
 /** Permanently deletes your account and personal data. Needs your password. */
 export const deleteMyAccount = (password: string) =>
   request<unknown>("/auth/me", { method: "DELETE", body: JSON.stringify({ password }) });
+
+// ------------------------------------------------------------------ company databases (read-only)
+
+export type DataSource = {
+  id: number; workspace_id: number; name: string; kind: string; description: string;
+  address: string; // "postgres · host:5432/db" - never the user or password
+  max_rows: number; table_count: number; last_tested_at: string | null; last_error: string | null; created_at: string;
+  dictionary: DataDictionary; dictionary_warnings: string[];
+};
+/** Where each standard business concept lives in this company's tables + its policies and "today" date. */
+export type DataDictionary = {
+  today?: string; currency?: string; notes?: string; policies?: Record<string, string>;
+  concepts?: Record<string, { table: string; columns?: Record<string, string>; notes?: string }>;
+};
+export type BusinessConcept = { name: string; label: string; fields: string[]; about?: string };
+export const listBusinessConcepts = () => request<BusinessConcept[]>("/business-concepts");
+export type DataTable = { name: string; columns: { name: string; type: string }[] };
+export type QueryResult = { columns: string[]; rows: Record<string, unknown>[]; row_count: number; truncated: boolean };
+
+export const listDataSources = (workspaceId: number) => request<DataSource[]>(`/workspaces/${workspaceId}/data-sources`);
+/** Owners only. The server tests the connection and reads the tables before saving. */
+export const createDataSource = (workspaceId: number, body: { name: string; url: string; description: string; max_rows: number }) =>
+  request<DataSource>(`/workspaces/${workspaceId}/data-sources`, { method: "POST", body: JSON.stringify(body) });
+export const updateDataSource = (id: number, body: Partial<{ name: string; url: string; description: string; max_rows: number; dictionary: DataDictionary | null }>) =>
+  request<DataSource>(`/data-sources/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+export const deleteDataSource = (id: number) => request<void>(`/data-sources/${id}`, { method: "DELETE" });
+export const testDataSource = (id: number) => request<DataSource>(`/data-sources/${id}/test`, { method: "POST" });
+export const getDataSourceSchema = (id: number) => request<{ tables: DataTable[] }>(`/data-sources/${id}/schema`);
+export const tryDataSourceQuery = (id: number, sql: string) =>
+  request<QueryResult>(`/data-sources/${id}/query`, { method: "POST", body: JSON.stringify({ sql }) });

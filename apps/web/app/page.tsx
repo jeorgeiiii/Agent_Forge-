@@ -115,13 +115,17 @@ export default function Home() {
         {graphs === null && <p className="muted">Loading…</p>}
         {graphs?.length === 0 && !error && <p className="muted">No workflows yet. Press + New workflow to make your first one.</p>}
         {graphs?.map((g) => (
-          <Link key={g.id} href={`/editor/${g.id}`} className="card">
-            <div>
+          <div key={g.id} className="card wf-card">
+            <Link href={`/editor/${g.id}`} className="wf-main">
               <strong>{g.name}</strong>
-              <div className="muted">ID: {g.id} · {g.definition.nodes?.length ?? 0} nodes</div>
+              <div className="muted">ID: {g.id} · {g.definition.nodes?.length ?? 0} nodes · {new Date(g.updated_at).toLocaleString()}</div>
+            </Link>
+            <div className="wf-actions">
+              {/* simple page for people who only want the result (no editor) */}
+              <Link href={`/use/${g.id}`} className="btn primary" title="Fill in the boxes and get the result - no editor">▶ Use</Link>
+              <Link href={`/editor/${g.id}`} className="btn">Edit</Link>
             </div>
-            <span className="muted">{new Date(g.updated_at).toLocaleString()}</span>
-          </Link>
+          </div>
         ))}
       </div>
     </main>

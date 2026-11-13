@@ -13,7 +13,7 @@ const CACHE_MS = 5 * 60 * 1000;
 export const AGENTFORGE_GUIDE = `HOW AGENTFORGE WORKS (answer questions with these facts - never invent buttons or URLs):
 - Editor: blocks are added from the list on the left and connected with lines. Every workflow needs one Start block and at least one End block.
 - Save: the "Save workflow" button. Run: the "▶ Run" button saves, then asks for the run input as JSON (e.g. {"name": "Ada"}; {} if nothing is needed) and opens the run page with each step's result. "Run history" lists past runs.
-- Run input is read in blocks with expressions: {{ $input.name }} or {{ $json.field }}; another block's output: {{ $node["Label"].json.field }}.
+- The run input is read anywhere with {{ $trigger.name }}. {{ $input }} / {{ $json }} mean the PREVIOUS block's output; another block's output: {{ $node["Label"].json.field }}.
 - Automatic starts: "⚡ Publish & triggers" publishes the workflow and shows its triggers: a webhook URL (POST to /webhooks/<token>; the body becomes the input), schedules (need a Schedule Trigger block) and chat. Workflows must be published for triggers to fire.
 - From code: POST /api/graphs/<workflow id>/runs with body {"input": {...}} and a signed-in session or API key. There is no /api/workflows/... endpoint.
 - Integrations (Slack, GitHub, Notion, Wikipedia, Tavily ...): connect a service once on the Integrations page (top menu); its key is saved encrypted. In the block, choose the Action and the saved key (credential_id). Wikipedia needs no key.
@@ -45,15 +45,18 @@ const FALLBACK_BLOCKS = `- start, end, manual_trigger, webhook_trigger, schedule
 
 let cache: { at: number; text: string } | null = null;
 
-/** One line per block: type, category, what it does, its settings; integrations also list their actions. */
+const isIntegration = (spec: Spec) => spec.category === "integration" && Boolean(spec.parameters?.properties?.action);
+
+/** Core blocks: one short line with their settings. Integrations: just "id: action, action" - keeps the prompt
+ * small (Groq's free plan allows ~8,000 tokens per minute and every chat message resends this prompt). */
 function describe(spec: Spec): string {
   const props = spec.parameters?.properties ?? {};
-  const fields = Object.keys(props).filter((k) => k !== "action");
-  const actions = props.action?.enum?.map((a) => `${a}${props.action?.["x-enum-labels"]?.[String(a)] ? ` (${props.action["x-enum-labels"][String(a)]})` : ""}`);
-  const noKey = spec.category === "integration" && !("credential_id" in props) ? " [no key needed]" : "";
-  return `- ${spec.type} [${spec.category}]${noKey}: ${spec.description}` +
-    (actions?.length ? ` actions: ${actions.join(", ")}.` : "") +
-    (fields.length ? ` config: ${fields.join(", ")}` : "");
+  if (isIntegration(spec)) {
+    return `- ${spec.type}${"credential_id" in props ? "" : " (no key)"}: ${(props.action?.enum ?? []).join(", ")}`;
+  }
+  const description = spec.description.length > 90 ? spec.description.slice(0, 90) + "…" : spec.description;
+  const fields = Object.keys(props);
+  return `- ${spec.type}: ${description}${fields.length ? ` config: ${fields.join(", ")}` : ""}`;
 }
 
 export async function nodeCatalogue(): Promise<string> {
@@ -62,7 +65,10 @@ export async function nodeCatalogue(): Promise<string> {
     const response = await fetch(`${API_URL}/api/node-types`, { cache: "no-store", signal: AbortSignal.timeout(3000) });
     if (!response.ok) throw new Error(String(response.status));
     const specs = (await response.json()) as Spec[];
-    const text = specs.filter((s) => !["trigger", "output"].includes(s.type)).map(describe).join("\n");
+    const shown = specs.filter((s) => !["trigger", "output"].includes(s.type));
+    const text = shown.filter((s) => !isIntegration(s)).map(describe).join("\n") +
+      "\nINTEGRATION BLOCKS (config: action, credential_id, plus that action's fields as shown in the editor form):\n" +
+      shown.filter(isIntegration).map(describe).join("\n");
     cache = { at: Date.now(), text };
     return text;
   } catch {

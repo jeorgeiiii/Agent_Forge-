@@ -147,7 +147,9 @@ STRIPE = Connector(
 
 from .connector_catalog_more import MORE_CONNECTORS  # noqa: E402 - Discord, HubSpot, Linear, search tools ...
 
-CONNECTORS = (SLACK, GITHUB, NOTION, AIRTABLE, RESEND, STRIPE, *MORE_CONNECTORS)
+from .connector_catalog_google import GOOGLE_CONNECTORS  # noqa: E402 - Sheets, Drive (Sign in with Google)
+
+CONNECTORS = (SLACK, GITHUB, NOTION, AIRTABLE, RESEND, STRIPE, *MORE_CONNECTORS, *GOOGLE_CONNECTORS)
 
 
 def register_builtin_connectors() -> None:

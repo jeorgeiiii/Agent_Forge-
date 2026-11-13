@@ -141,10 +141,12 @@ function GraphEditorCanvas({
   graphId,
   externalGraph,
   onGraphChange,
+  runRequest = 0,
 }: {
   graphId: string;
   externalGraph?: GraphDefinition | null;
   onGraphChange?: (definition: GraphDefinition) => void;
+  runRequest?: number;
 }) {
   const [specs, setSpecs] = useState<Record<string, NodeTypeSpec>>({});
   const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>([]);
@@ -219,7 +221,8 @@ function GraphEditorCanvas({
     if (externalGraph && Array.isArray(externalGraph.nodes) && externalGraph.nodes.length > 0) {
       setNodes(toFlowNodes(externalGraph, specs));
       setEdges(toFlowEdges(externalGraph.edges));
-      setNotice({ text: "Canvas updated by the AI Copilot - review and save.", kind: "info" });
+      setNotice({ text: "Canvas updated by the AI Copilot - saving…", kind: "info" });
+      setPendingAutoSave(true);   // saved right after React has drawn the new blocks (effect below)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [externalGraph, setEdges, setNodes]);
@@ -269,6 +272,15 @@ function GraphEditorCanvas({
     }
   }
 
+  // Copilot changes are saved automatically, so "Run" (from the chat or here) always uses them
+  const [pendingAutoSave, setPendingAutoSave] = useState(false);
+  useEffect(() => {
+    if (!pendingAutoSave || !ready) return;
+    setPendingAutoSave(false);
+    void saveGraph();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingAutoSave, ready, nodes, edges]);
+
   async function saveGraph(): Promise<boolean> {
     setSaving(true);
     setNotice({ text: "Saving…", kind: "info" });
@@ -301,6 +313,14 @@ function GraphEditorCanvas({
       node.data.runStatus === statuses[node.id] ? node : { ...node, data: { ...node.data, runStatus: statuses[node.id] } }));
   }, [setNodes]);
   const runInputNames = useMemo(() => findInputNames(nodes.map((n) => n.data.config)), [nodes]);
+
+  // "Run" pressed in the Copilot chat: ask for inputs if the workflow needs any, otherwise run straight away
+  useEffect(() => {
+    if (!runRequest || !ready) return;
+    if (runInputNames.length) setRunOpen(true);
+    else void runGraph({});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runRequest]);
 
   /** Runs use the SAVED graph, so save first; then start and open the run inspector. */
   async function runGraph(input: Record<string, unknown>) {
@@ -390,6 +410,10 @@ Example: ${help(spec.type).example}`}>
                       title={BUTTON_HELP.run}>▶ Run</button>
               <Link className="ge-secondary" href={`/graphs/${graphId}/runs`} title={BUTTON_HELP.history}>Run history</Link>
             </div>
+            <Link className="ge-secondary ge-full" href={`/use/${graphId}`}
+                  title="A simple page where anyone can fill in the inputs and see the result - share it with your team">
+              👤 Simple page for users
+            </Link>
             <Link className="ge-secondary ge-full" href={`/graphs/${graphId}/triggers`} title={BUTTON_HELP.triggers}>⚡ Publish &amp; triggers</Link>
             <small className="ge-btn-help"><strong>Run:</strong> {BUTTON_HELP.run}</small>
             <small className="ge-btn-help"><strong>Run history:</strong> {BUTTON_HELP.history}</small>
@@ -499,6 +523,7 @@ export default function GraphEditor(props: {
   graphId: string;
   externalGraph?: GraphDefinition | null;
   onGraphChange?: (definition: GraphDefinition) => void;
+  runRequest?: number;   // increases when "Run" is pressed outside the canvas (the Copilot chat)
 }) {
   return (
     <ReactFlowProvider>

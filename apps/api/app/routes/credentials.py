@@ -1,7 +1,11 @@
+import html
+import json
+
 from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
 from ..deps import current_user_id, get_db, require_internal_token
 from ..schemas import CredentialCreate, CredentialRead, CredentialUpdate, OAuthStart
 from ..services import credentials as svc
@@ -57,21 +61,56 @@ async def refresh(credential_id: int, request: Request, user_id: int | None = De
 
 @router.post("/oauth/start")
 def oauth_start(payload: OAuthStart, user_id: int | None = Depends(current_user_id), db: Session = Depends(get_db)):
+    """Body: {"connector": "google_sheets", "credential_name", "workspace_id"} - provider and scopes come from the
+    integration's definition (the browser can't widen them). Older form: {"provider", "scopes"}."""
+    provider, scopes = payload.provider, payload.scopes
+    if payload.connector:
+        from agentforge_core.connectors import get_connector
+
+        try:
+            connector = get_connector(payload.connector)
+        except ValueError as error:
+            raise svc.ServiceError(str(error), 404) from error
+        if not connector.oauth_provider:
+            raise svc.ServiceError(f"{connector.name} uses a pasted key, not 'Sign in with'.", 422)
+        provider, scopes = connector.oauth_provider, list(connector.oauth_scopes)
+    if not provider:
+        raise svc.ServiceError("Say which integration (connector) or provider to sign in with.", 422)
     url = svc.start_oauth_flow(
-        db, user_id, provider=payload.provider, credential_name=payload.credential_name,
-        workspace_id=payload.workspace_id, scopes=payload.scopes,
+        db, user_id, provider=provider, credential_name=payload.credential_name,
+        workspace_id=payload.workspace_id, scopes=scopes,
     )
     return {"authorize_url": url}
 
 
-@router.get("/oauth/callback", response_class=HTMLResponse)
-async def oauth_callback(state: str, code: str, db: Session = Depends(get_db)):
-    record = await svc.handle_oauth_callback(db, state=state, code=code)
-    _audit(None, db, "credential.oauth_connect", record, provider=record.type)
+def _oauth_page(title: str, message: str, ok: bool) -> HTMLResponse:
+    """Small page shown in the sign-in popup. Tells the AgentForge tab (only that origin) and closes itself."""
+    origin = json.dumps(get_settings().public_app_url.rstrip("/"))
+    status_ = json.dumps("done" if ok else "failed")
     return HTMLResponse(
-        f"<p>Connected <b>{record.name}</b>. You can close this window.</p>"
-        "<script>window.opener && window.opener.postMessage({type:'agentforge-oauth-done'}, '*');</script>"
+        "<!doctype html><meta charset='utf-8'><title>AgentForge</title>"
+        "<body style='font-family:system-ui;background:#16181f;color:#e5e7eb;display:grid;place-items:center;"
+        "min-height:90vh;margin:0'><div style='text-align:center;max-width:420px;padding:16px'>"
+        f"<h2>{html.escape(title)}</h2><p>{html.escape(message)}</p><p style='color:#9ca3af'>You can close this window.</p>"
+        "</div><script>"
+        f"try{{window.opener&&window.opener.postMessage({{type:'agentforge-oauth-'+{status_}}},{origin})}}catch(e){{}}"
+        + ("setTimeout(function(){window.close()},1500);" if ok else "")
+        + "</script></body>",
+        status_code=200 if ok else 400,
     )
+
+
+@router.get("/oauth/callback", response_class=HTMLResponse)
+async def oauth_callback(state: str = "", code: str = "", error: str = "", db: Session = Depends(get_db)):
+    if error or not code:  # e.g. the person pressed "Cancel" on Google's screen
+        reason = "You cancelled the sign-in." if error == "access_denied" else f"Sign-in did not finish ({error or 'no code'})."
+        return _oauth_page("Not connected", reason, ok=False)
+    try:
+        record = await svc.handle_oauth_callback(db, state=state, code=code)
+    except svc.ServiceError as failure:
+        return _oauth_page("Not connected", failure.message, ok=False)
+    _audit(None, db, "credential.oauth_connect", record, provider=record.type)
+    return _oauth_page("Connected", f"{record.name} is connected to AgentForge.", ok=True)
 
 
 @router.post("/rotate-master-key", dependencies=[Depends(require_internal_token)])

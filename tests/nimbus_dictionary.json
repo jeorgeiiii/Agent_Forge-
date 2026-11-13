@@ -1,0 +1,22 @@
+{
+  "today": "2026-10-31",
+  "currency": "INR",
+  "notes": "Tally export. Every transaction is a voucher (vch_hdr) with double-entry lines (vch_lines). A bank's ledger account is debited when money comes in. TDS deducted by customers is booked to ledger TDS-REC. Unidentified money is parked in ledger SUSP. Card/UPI receipts go to ledger PG-CLR until the gateway pays out. Company rules are in the table mapped as 'policy'. Foreign-currency vouchers have cur <> 'INR' and fx_rate.",
+  "policies": {},
+  "concepts": {
+    "customer":                {"table": "party_mst", "where": "grp = 'Sundry Debtors'", "columns": {"id": "party_cd", "name": "party_nm", "tax_id": "gstin", "state": "state_nm"}, "notes": "names may be in different case"},
+    "vendor":                  {"table": "party_mst", "where": "grp = 'Sundry Creditors'", "columns": {"id": "party_cd", "name": "party_nm", "tax_id": "gstin"}},
+    "invoice":                 {"table": "vch_hdr", "where": "vch_type = 'Sales'", "columns": {"id": "vch_no", "customer": "party_cd", "date": "vch_dt", "due_date": "due_dt", "amount": "amt"}},
+    "customer_payment":        {"table": "vch_hdr", "where": "vch_type = 'Receipt'", "columns": {"id": "vch_id", "date": "vch_dt", "amount": "amt", "customer": "party_cd", "reference": "narration"}, "notes": "amt is the gross amount settled; the bank received amt minus TDS (see vch_lines: debit on the bank ledger, debit on TDS-REC, credit on the party). party_cd NULL = not a known party."},
+    "payment_allocation":      {"table": "bill_wise", "where": "ref_type = 'Agst Ref'", "columns": {"payment": "vch_id", "invoice": "bill_ref", "amount_applied": "amt"}, "notes": "Tally bill-wise: 'New Ref' rows are the bills themselves (on Sales vouchers); 'Agst Ref' = a payment applied to bill_ref; 'On Account' = money received but not applied to any bill (bill_ref is NULL)."},
+    "bank_account":            {"table": "bank_mst", "columns": {"id": "ledger_cd", "bank": "bank_nm", "ledger_account": "ledger_cd", "min_balance": "min_bal", "overdraft_limit": "od_limit"}},
+    "bank_statement_line":     {"table": "bank_stmt", "columns": {"id": "row_id", "bank_account": "bank_cd", "date": "txn_dt", "description": "narr", "reference": "chq_ref", "debit": "withdrawal", "credit": "deposit", "balance": "closing_bal"}, "notes": "narr is the bank's terse UPPER-CASE text; value_dt can be NULL"},
+    "gateway_settlement":      {"table": "pg_payout", "columns": {"id": "payout_id", "date": "payout_dt", "gross": "gross", "fee": "mdr", "tax_on_fee": "gst_on_mdr", "net": "net", "bank_reference": "utr"}},
+    "gateway_settlement_item": {"table": "pg_txn", "columns": {"settlement": "payout_id", "payment": "vch_id", "amount": "amt"}},
+    "ledger_entry":            {"table": "vch_hdr", "columns": {"id": "vch_id", "date": "vch_dt", "type": "vch_type", "narration": "narration", "created_by": "entered_by", "approved_by": "approved_by"}},
+    "ledger_line":             {"table": "vch_lines", "columns": {"entry": "vch_id", "account": "ledger_cd", "debit": "dr", "credit": "cr"}},
+    "ledger_account":          {"table": "ledger_mst", "columns": {"code": "ledger_cd", "name": "ledger_nm", "type": "grp"}},
+    "vendor_payment":          {"table": "vch_hdr", "where": "vch_type = 'Payment'", "columns": {"id": "vch_id", "vendor": "party_cd", "date": "vch_dt", "amount": "amt", "approved_by": "approved_by"}, "notes": "the bank side is the credit line on the bank ledger in vch_lines; cheques show the cheque number in narration"},
+    "policy":                  {"table": "sys_config", "columns": {"name": "cfg_key", "value": "cfg_val"}}
+  }
+}

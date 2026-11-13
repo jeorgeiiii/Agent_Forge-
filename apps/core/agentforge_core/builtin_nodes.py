@@ -9,7 +9,9 @@ from .registry import NodeTypeSpec, register_config_validator, register_node_typ
 _STR = {"type": "string"}
 # Node types an agent may use as tools (no triggers / flow control).
 MAX_AGENT_DEPTH = 3  # supervisor -> worker -> sub-worker (enforced at compile time and at runtime)
-AGENT_TOOL_NODE_TYPES = ("http", "template", "set", "llm", "agent")  # "agent" = sub-agent
+AGENT_TOOL_NODE_TYPES = ("http", "template", "set", "llm", "agent", "database")  # "agent" = sub-agent
+DATABASE_ACTIONS = {"query": "Run a query (SELECT)", "list_tables": "List tables",
+                    "describe_table": "Describe a table"}
 _TOOL_NAME = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 BUILTIN_SPECS: list[NodeTypeSpec] = [
@@ -99,6 +101,10 @@ BUILTIN_SPECS: list[NodeTypeSpec] = [
             "temperature": {"type": "number", "minimum": 0, "maximum": 2},
             "max_tokens": {"type": "integer", "minimum": 1, "maximum": 128_000},
             "max_steps": {"type": "integer", "minimum": 1, "maximum": 50},
+            # how much of each tool result the AI sees (smaller = cheaper, fits free AI plans)
+            "max_tool_result_chars": {"type": "integer", "minimum": 500, "maximum": 100_000},
+            # your AI plan's per-request token limit (e.g. 8000 on Groq's free plan): requests are trimmed to fit
+            "context_budget_tokens": {"type": "integer", "minimum": 2000, "maximum": 2_000_000},
             "max_total_tokens": {"type": "integer", "minimum": 100},
             "json_output": {"type": "boolean"},
             # integration tools that send or change things (Slack message, GitHub issue ...) need this
@@ -131,6 +137,34 @@ BUILTIN_SPECS: list[NodeTypeSpec] = [
             }},
         }},
         runs_in="workflow",
+    ),
+    # ----- company data ---------------------------------------------------
+    NodeTypeSpec(
+        "database", "Company database", "data",
+        "Reads the company's own database (read-only): run a SELECT, list the tables or describe one table. "
+        "As an AI agent tool the AI writes the SELECT itself; it can never change data.",
+        parameters={"type": "object", "required": ["data_source_id", "action"], "properties": {
+            "data_source_id": {"type": "integer", "title": "Database",
+                               "description": "A database connected on the Company data page."},
+            "action": {"type": "string", "title": "Action", "enum": list(DATABASE_ACTIONS),
+                       "x-enum-labels": DATABASE_ACTIONS},
+            "sql": {"type": "string", "title": "SQL query", "x-multiline": True, "x-actions": ["query"],
+                    "description": "One SELECT. Put values as :name and fill them below, e.g. "
+                                   "SELECT * FROM customers WHERE email = :email"},
+            "params": {"type": "object", "title": "Values for :name placeholders", "x-actions": ["query"],
+                       "description": 'e.g. {"email": "{{ $input.email }}"} - safer than writing values into the SQL'},
+            "table": {"type": "string", "title": "Table", "x-actions": ["describe_table"]},
+            "max_rows": {"type": "integer", "minimum": 1, "maximum": 1000, "title": "Most rows to return",
+                         "x-actions": ["query"]},
+            # Focus for AI agents: list_tables / describe_table only show these (saves tokens on big databases).
+            # Not a security boundary - the database login's permissions are.
+            # Role agents ask for BUSINESS CONCEPTS (customer_payment, invoice ...); each company's data dictionary
+            # says which of its tables hold them - so one role template works on differently built databases.
+            "concepts": {"type": "array", "items": {"type": "string"}, "title": "Business concepts (optional)",
+                         "description": 'e.g. ["customer_payment", "invoice", "bank_statement_line"]'},
+            "tables": {"type": "array", "items": {"type": "string"}, "title": "Only these tables (optional)",
+                       "description": 'e.g. ["receipts", "invoices", "bank_transactions"] - the AI sees just these'},
+        }},
     ),
     # ----- flow control ---------------------------------------------------
     NodeTypeSpec(
@@ -201,6 +235,12 @@ def validate_agent_config(config: dict[str, Any]) -> list[str]:
         if is_connector(node_type):
             problems = tool_config_errors(get_connector(node_type), node.get("config") or {},
                                           bool(config.get("allow_writes")))
+        elif node_type == "database":
+            # the AI writes the SQL / picks the table; you fix which database and which action
+            db_config = node.get("config") or {}
+            problems = [] if db_config.get("data_source_id") else ["pick the company database (data_source_id)."]
+            if db_config.get("action") not in DATABASE_ACTIONS:
+                problems.append(f"action must be one of {list(DATABASE_ACTIONS)}.")
         elif node_type in AGENT_TOOL_NODE_TYPES:
             problems = validate_node_config(node_type, node.get("config") or {})
             if not str(tool.get("description") or "").strip():
@@ -211,7 +251,17 @@ def validate_agent_config(config: dict[str, Any]) -> list[str]:
     return errors
 
 
+def validate_database_config(config: dict[str, Any]) -> list[str]:
+    """A 'Company database' block placed in a workflow (not as a tool) needs its SQL / table filled in."""
+    if config.get("action") == "query" and not str(config.get("sql") or "").strip():
+        return ["sql is required for 'Run a query' (e.g. SELECT * FROM customers LIMIT 10)."]
+    if config.get("action") == "describe_table" and not str(config.get("table") or "").strip():
+        return ["table is required for 'Describe a table'."]
+    return []
+
+
 def register_builtin_nodes() -> None:
     for spec in BUILTIN_SPECS:
         register_node_type(spec, replace=True)
+    register_config_validator("database", validate_database_config)
     register_config_validator("agent", validate_agent_config)

@@ -27,8 +27,9 @@ from .registry import NodeTypeSpec, _validate, register_config_validator, regist
 
 LINE_BREAKS = ("\r", "\n")  # a key or header name with these could inject extra HTTP headers
 BAD_HEADER_CHARS = (":", " ", *LINE_BREAKS)
-FIELD_TYPES = {"string", "text", "integer", "number", "boolean", "object", "array"}
-_JSON_TYPE = {"text": "string"}  # editor-only type -> JSON schema type
+# rows = a table: list of rows, each row a list of cells (Google Sheets values)
+FIELD_TYPES = {"string", "text", "integer", "number", "boolean", "object", "array", "rows"}
+_JSON_TYPE = {"text": "string", "rows": "array"}  # editor-only type -> JSON schema type
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,10 @@ class Connector:
     needs_key: bool = True
     headers: dict[str, str] = field(default_factory=dict)
     key_label: str = "API key"
+    # "Sign in with ..." services: the vault's OAuth flow (services/credentials.py OAUTH_PROVIDERS) gets a
+    # token with exactly these scopes; the worker sends it as "Bearer <access_token>" and it auto-refreshes.
+    oauth_provider: str = ""
+    oauth_scopes: tuple[str, ...] = ()
     key_help: str = ""          # where to find the key, shown on the Connect form
     docs_url: str = ""
     # Slack-style APIs answer 200 with {"ok": false, "error": "..."}: name the flag + error keys here
@@ -194,6 +199,7 @@ def connector_to_dict(connector: Connector) -> dict[str, Any]:
     return {
         "id": connector.id, "name": connector.name, "category": connector.category,
         "description": connector.description, "needs_key": connector.needs_key,
+        "oauth_provider": connector.oauth_provider, "oauth_scopes": list(connector.oauth_scopes),
         "key_label": connector.key_label, "key_help": connector.key_help,
         "docs_url": connector.docs_url,
         "actions": [{"id": a.id, "name": a.name, "description": a.description, "writes": a.writes,
@@ -295,6 +301,8 @@ def _json_field(f: ConnectorField) -> dict[str, Any]:
         schema["enum"] = list(f.enum)
     if f.type == "array":
         schema["items"] = {"type": "string"}
+    if f.type == "rows":
+        schema["items"] = {"type": "array", "items": {"type": "string"}}
     return schema
 
 

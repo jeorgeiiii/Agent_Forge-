@@ -1,0 +1,361 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.3cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{listings}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{brand}{HTML}{3B5BDB}
+\definecolor{codebg}{HTML}{F4F5F7}
+
+\titleformat{\section}{\Large\bfseries\color{brand}}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.6em}{}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{AgentForge -- User Guide \& User Journey}
+\fancyhead[R]{\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{codebg!70!black},
+  breaklines=true,
+  columns=fullflexible,
+  keepspaces=true
+}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.55em}
+\renewcommand{\arraystretch}{1.25}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\begin{document}
+
+% ------------------------------------------------------------------ title
+\begin{titlepage}
+  \centering
+  \vspace*{3cm}
+  {\Huge\bfseries\color{brand} AgentForge\par}
+  \vspace{0.6cm}
+  {\Large User Guide \& User Journey\par}
+  \vspace{1.5cm}
+  {\large A no-code platform for building AI-powered workflows\par}
+  \vfill
+  {\large Document for technical review\par}
+  \vspace{0.3cm}
+  {\large \today}
+  \vspace{2cm}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+% ------------------------------------------------------------------ 1
+\section{Overview}
+
+AgentForge is a platform on which users build \textbf{workflows}: blocks joined
+together that the computer runs step by step. A workflow can contain AI blocks,
+lookups in the company database, and calls to tools such as Slack, GitHub or
+Google Sheets. People who do not want to use the editor can run a finished
+workflow from a simple page: fill in a few boxes, press one button, read the
+result.
+
+\subsection{Key concepts}
+
+\begin{longtable}{@{}L{3.4cm}L{12cm}@{}}
+\toprule
+\textbf{Term} & \textbf{Meaning} \\
+\midrule
+\endhead
+Workflow & A set of connected blocks, like a recipe the computer follows. \\
+Block (node) & One step in a workflow. \\
+Run & One execution of a workflow, with its own result and history. \\
+Workspace & A team's space. Members have the role owner, editor or viewer. \\
+Credential & A saved, encrypted login or API key for a tool. \\
+Company data & The company's own database, connected \textbf{read-only}. \\
+Copilot & An AI helper that builds, edits, explains and fixes workflows from plain-English requests. \\
+\bottomrule
+\end{longtable}
+
+\subsection{System components}
+
+\begin{itemize}[nosep]
+  \item \textbf{Web app} (Next.js, port 3000): editor, Use page, settings.
+  \item \textbf{API} (FastAPI, port 8000): graphs, credentials, files, data sources, audit log, Copilot.
+  \item \textbf{Worker} (Python): executes runs through Temporal.
+  \item \textbf{Temporal} (port 7233, UI on 8233): durable workflow engine.
+  \item \textbf{Database}: SQLite by default, PostgreSQL in Docker. \textbf{Redis} for caching and limits.
+\end{itemize}
+
+% ------------------------------------------------------------------ 2
+\section{Installing and running locally}
+
+\subsection{Option A: Docker (recommended)}
+
+Prerequisites: Git and Docker Desktop (WSL2 on Windows).
+
+\begin{lstlisting}[language=bash]
+git clone https://github.com/jeorgeiiii/Agent_Forge-.git
+cd Agent_Forge-
+cp .env.example .env
+\end{lstlisting}
+
+Edit \texttt{.env} and set:
+
+\begin{itemize}[nosep]
+  \item \texttt{INTERNAL\_API\_TOKEN}: any long random string.
+  \item \texttt{CREDENTIALS\_MASTER\_KEY}: generate with
+  \texttt{python -c "import os,base64;print(base64.urlsafe\_b64encode(os.urandom(32)).decode())"}
+  \item \texttt{GROQ\_API\_KEY} (or \texttt{COPILOT\_API\_URL} and \texttt{COPILOT\_API\_KEY}): only needed for the Copilot and AI blocks. Each person should create their own key; do not share keys.
+\end{itemize}
+
+\begin{lstlisting}[language=bash]
+docker compose -f infra/docker-compose.yml --env-file .env up --build
+\end{lstlisting}
+
+\begin{longtable}{@{}L{4cm}L{8cm}@{}}
+\toprule
+\textbf{Service} & \textbf{URL} \\
+\midrule
+Web app & \url{http://localhost:3000} \\
+API documentation & \url{http://localhost:8000/docs} \\
+Temporal UI & \url{http://localhost:8233} \\
+\bottomrule
+\end{longtable}
+
+\subsection{Option B: Native run (for debugging)}
+
+Prerequisites: Python 3.12+, \texttt{uv}, Node 20+, Docker (for Temporal and Redis).
+Use four terminals from the repository root:
+
+\begin{enumerate}[nosep]
+  \item Backing services: \texttt{docker compose -f infra/docker-compose.yml up postgres temporal redis} (Postgres is optional because the default \texttt{.env} uses SQLite).
+  \item API: \texttt{cd apps/api \&\& uv sync \&\& uv run uvicorn app.main:app --reload --port 8000}
+  \item Worker: \texttt{cd apps/worker \&\& uv sync \&\& uv run python main.py}
+  \item Web: \texttt{cd apps/web \&\& npm install \&\& npm run dev}
+\end{enumerate}
+
+If tables are missing, run \texttt{uv run alembic upgrade head} in \texttt{apps/api}.
+
+\subsection{Notes}
+
+\begin{itemize}[nosep]
+  \item \texttt{.env}, \texttt{*.db} and local test-account files are git-ignored; each developer creates their own \texttt{.env}.
+  \item On Windows use \texttt{127.0.0.1}, not \texttt{localhost}, for \texttt{AGENTFORGE\_API\_URL}.
+  \item Keep \texttt{AUTH\_REQUIRED=false} for local use. SSO is currently paused.
+  \item Tests: run \texttt{uv run pytest} in \texttt{apps/api}, \texttt{apps/core} and \texttt{apps/worker}.
+\end{itemize}
+
+% ------------------------------------------------------------------ 3
+\section{Block types}
+
+Every workflow needs one \emph{Start} and one \emph{End} block. Edges must form a
+directed acyclic graph (no loops).
+
+\begin{longtable}{@{}L{3.6cm}L{12cm}@{}}
+\toprule
+\textbf{Group} & \textbf{Blocks} \\
+\midrule
+\endhead
+Triggers & Start, Manual, Webhook (own URL), Schedule (cron or interval), Chat \\
+AI & \textbf{LLM} (one prompt, one answer); \textbf{Agent} (AI that uses tools over several steps, with memory, step limits and token budgets) \\
+Logic & If, Switch, Merge, Wait, \textbf{Approval} (pauses until a person approves) \\
+Data & Template (text with \texttt{\{\{ input.name \}\}}), Set (build fields), HTTP request, Company database \\
+Integrations & Slack, GitHub, Notion, Airtable, Resend (email), Stripe (read-only), Google Sheets and Drive, Discord, HubSpot, Asana, Linear, Monday, ClickUp, Typeform, GitLab, Sentry, Vercel, Cloudflare (read-only), Webflow, Brandfetch, and search tools (Tavily, Serper, Exa, Firecrawl, Wikipedia) \\
+End & Finishes the workflow and returns the result \\
+\bottomrule
+\end{longtable}
+
+% ------------------------------------------------------------------ 4
+\section{Pages of the application}
+
+\begin{longtable}{@{}L{4.6cm}L{11cm}@{}}
+\toprule
+\textbf{Page} & \textbf{Purpose} \\
+\midrule
+\endhead
+Home (\texttt{/}) & List of workflows, \textbf{+ New workflow}, and the role picker (Everyone, Sales, Marketing, Tech, Analyst, Finance) which tailors the examples shown in block help. \\
+Editor (\texttt{/editor/<id>}) & Canvas to place and configure blocks, run, and use the Copilot. \\
+Use (\texttt{/use/<id>}) & Simple page for non-technical users: inputs, one button, result as text or table. \\
+Runs (\texttt{/graphs/<id>/runs}) & Run history with per-step details. \\
+Triggers (\texttt{/graphs/<id>/triggers}) & Schedules and webhook addresses. \\
+Integrations & Browse and connect the supported tools. \\
+Credentials & Saved API keys and logins (Google uses OAuth). \\
+Company data (\texttt{/data}) & Connect the company database read-only; browse tables; edit the data dictionary; try a query. \\
+Files & Upload files that workflows can reference. \\
+Settings & Team, Usage and quotas, Activity (audit log), Data retention. \\
+\bottomrule
+\end{longtable}
+
+% ------------------------------------------------------------------ 5
+\section{Getting started (about five minutes)}
+
+\begin{enumerate}
+  \item Sign in or sign up. With \texttt{AUTH\_REQUIRED=false} the app also works in single-user mode.
+  \item On the Home page choose your \textbf{role} so that examples match your job.
+  \item Press \textbf{+ New workflow}. A starter opens: Start $\rightarrow$ Template (``Hello \{\{ input.name \}\}!'') $\rightarrow$ End.
+  \item Click a block to configure it. Each block has plain-language help with an example.
+  \item Press \textbf{Run}, enter the input and read the result in the editor.
+  \item Open \texttt{/use/<id>} to see what a non-technical colleague would see.
+\end{enumerate}
+
+% ------------------------------------------------------------------ 6
+\section{Common tasks}
+
+\subsection{Use AI in a workflow}
+Save an API key under \emph{Credentials}. Add an \textbf{LLM} block for a single
+answer, or an \textbf{Agent} block when the AI should use tools over several
+steps. Agents cannot write to systems unless \texttt{allow\_writes} is enabled.
+
+\subsection{Connect a tool (for example Slack)}
+Open \emph{Integrations}, choose the tool, and add its key or sign in with OAuth.
+Add the matching block to the workflow and select that credential.
+
+\subsection{Connect the company database}
+\begin{enumerate}[nosep]
+  \item An owner opens \texttt{/data}. The page shows SQL to create a login that can only \emph{read}.
+  \item The owner connects the database and presses \textbf{Test}; AgentForge lists the tables.
+  \item Editors may browse tables and try a query. Nothing in the platform can change company data.
+  \item Add a \textbf{Company database} block, or give an Agent the database tool.
+\end{enumerate}
+
+\subsection{Describe the data (data dictionary)}
+In the dictionary editor, map business concepts (customer, invoice, loan, and so on)
+to the company's real tables and columns, and add today's date, currency and
+policies. The built-in \textbf{Treasury / Transaction Manager} role template is
+written only in business terms, so it works on any company's schema; only the
+dictionary differs.
+
+\subsection{Run automatically}
+Use a \textbf{Schedule} trigger (for example every Monday at 9) or a \textbf{Webhook}
+trigger, which gives a URL that a CRM or form can call.
+
+\subsection{Keep a human in control}
+Add an \textbf{Approval} block. The run pauses and shows ``Waiting for someone to
+approve'' until a person decides.
+
+\subsection{Fix a failed run}
+Open the run, find the failing step, and ask the Copilot to \emph{explain} or
+\emph{fix} it.
+
+\subsection{Versions and publishing}
+Workflows keep version history with rollback, and can be duplicated, deleted and
+restored. \textbf{Publish} makes a workflow available; \textbf{Activate} turns on
+its triggers.
+
+% ------------------------------------------------------------------ 7
+\section{Roles and permissions}
+
+\begin{longtable}{@{}L{2.6cm}L{13cm}@{}}
+\toprule
+\textbf{Role} & \textbf{Can do} \\
+\midrule
+\endhead
+Owner & Everything, including connecting company databases, managing the team and transferring ownership. \\
+Editor & Build and run workflows, browse company data, try queries. \\
+Viewer & View workflows only; creation and edit controls are hidden. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Security and governance features}
+\begin{itemize}[nosep]
+  \item Credentials are stored encrypted with a master key (\texttt{CREDENTIALS\_MASTER\_KEY}).
+  \item Company databases are accessed read-only; HTTP blocks accept only public destinations on ports 80 and 443 (SSRF protection).
+  \item Audit log with verification and CSV export; usage quotas; data-retention settings.
+  \item Rate limits on Copilot and data-source query endpoints.
+  \item Instructions embedded in data (for example payment remarks) are treated as data, never as commands to an agent.
+\end{itemize}
+
+% ------------------------------------------------------------------ 8
+\section{User journey}
+
+\subsection{Persona A: Maya, Finance owner (builder)}
+
+\begin{longtable}{@{}L{2.4cm}L{7.2cm}L{6cm}@{}}
+\toprule
+\textbf{Stage} & \textbf{What she does} & \textbf{Need / how the product helps} \\
+\midrule
+\endhead
+1. Discover & Signs up, creates a workspace, picks the Finance role. & ``Is this for me?'' Role-based examples reassure her. \\
+2. Set up & Adds an AI key under Credentials. Connects the company database on \texttt{/data} with a read-only login. Fills in the data dictionary. & Trust that data cannot be changed: read-only wording and the SQL snippet. \\
+3. Build & Creates a workflow with an Agent block (Treasury template) and a Slack block, or asks the Copilot to draft it. & Speed: Copilot and per-block help. \\
+4. Test & Presses Run and reads the result in the editor. & Visible steps and a clear result. \\
+5. Automate & Adds a Schedule trigger and an Approval block before any sensitive action, then activates. & A human stays in control. \\
+6. Govern & Reviews usage and quotas, the activity log, and invites teammates as editors or viewers. & Cost control and accountability. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Persona B: Raj, Operations user (consumer)}
+
+\begin{longtable}{@{}L{2.4cm}L{13.2cm}@{}}
+\toprule
+\textbf{Stage} & \textbf{What he does} \\
+\midrule
+\endhead
+1. Receive & Gets a link \texttt{/use/<id>} from Maya. \\
+2. Fill in & Types a few boxes, such as customer name or month. \\
+3. Run & Presses the button and sees progress (``Working\ldots{} step 2 of 3''). \\
+4. Read & Gets a plain-text answer or a table; presses \textbf{Run again} to keep his inputs. \\
+5. Escalate & If something looks wrong he tells Maya, who opens the run history and uses the Copilot's fix suggestion. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Persona C: Senior developer (operator)}
+
+\begin{longtable}{@{}L{2.4cm}L{13.2cm}@{}}
+\toprule
+\textbf{Stage} & \textbf{What they do} \\
+\midrule
+\endhead
+1. Install & Clones the repository and starts the stack with Docker (Section 2). \\
+2. Verify & Opens the API docs at \texttt{:8000/docs} and the Temporal UI at \texttt{:8233}. \\
+3. Explore & Creates a sample workflow, runs it, and inspects runs in the web app and in Temporal. \\
+4. Review & Checks the credential vault, audit log, read-only data-source handling and test suites. \\
+\bottomrule
+\end{longtable}
+
+\subsection{End-to-end flow}
+
+\begin{center}
+\small
+Sign in $\rightarrow$ choose role $\rightarrow$ connect credentials / company data $\rightarrow$ build workflow (or ask Copilot)\\
+$\rightarrow$ test run $\rightarrow$ publish and activate $\rightarrow$ colleagues use \texttt{/use/<id>} $\rightarrow$ monitor runs, usage and audit log
+\end{center}
+
+% ------------------------------------------------------------------ 9
+\section{Troubleshooting}
+
+\begin{longtable}{@{}L{5.6cm}L{10cm}@{}}
+\toprule
+\textbf{Symptom} & \textbf{Check} \\
+\midrule
+\endhead
+Home shows ``API: not reachable'' & The API is not running; check port 8000 and \texttt{.env}. \\
+Runs stay ``queued'' & The worker or Temporal is not running. \\
+Copilot or AI blocks do not respond & AI key missing or invalid, or the rate limit was reached. \\
+Database ``Test'' fails & Wrong host or password, or the read-only user lacks \texttt{SELECT}. \\
+Run stuck ``waiting'' & An Approval block is waiting for a person. \\
+Missing tables on first start & Run \texttt{uv run alembic upgrade head} in \texttt{apps/api}. \\
+\bottomrule
+\end{longtable}
+
+\vfill
+\begin{center}
+\footnotesize\textit{This guide was derived from the source code (pages, block types, role templates and API routes).
+Button labels and minor UI details may differ slightly from the running application.}
+\end{center}
+
+\end{document}

@@ -423,3 +423,31 @@ class UserIdentityRecord(Base):
     email: Mapped[str] = mapped_column(String(320), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class DataSourceRecord(Base):
+    """A company's own database, connected READ-ONLY so agents can look things up (services/data_sources.py).
+
+    The connection address (with its password) is encrypted with the vault key and never sent to the browser
+    or the worker: queries run inside the API, which checks the workflow's workspace first.
+    """
+
+    __tablename__ = "data_sources"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)  # postgres | mysql | sqlite (tests/dev only)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)  # what the data is - shown to agents
+    encrypted_url: Mapped[str] = mapped_column(Text, nullable=False)
+    max_rows: Mapped[int] = mapped_column(Integer, default=200, nullable=False)  # per query
+    # cached table/column list (refreshed by "Test connection")
+    schema_cache: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
+    # data dictionary: where each standard business concept lives in THIS company's tables, its policies and the
+    # "today" date for reports (see agentforge_core/business_concepts.py and validate_dictionary)
+    dictionary: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
+    last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)

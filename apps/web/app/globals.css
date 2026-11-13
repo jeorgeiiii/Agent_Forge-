@@ -631,3 +631,57 @@ label.ge-role-chip { display: inline-flex; align-items: center; gap: 5px; }
 .af-node.run-success { box-shadow: 0 0 0 2px #22c55e, 0 0 16px rgba(34,197,94,.35); }
 .af-node.run-failed, .af-node.run-error { box-shadow: 0 0 0 2px #ef4444, 0 0 16px rgba(239,68,68,.35); }
 .af-node.run-running { box-shadow: 0 0 0 2px #f59e0b; }
+
+/* Home: workflow card with Use / Edit buttons */
+.wf-card { display: flex; align-items: center; gap: 12px; }
+.wf-main { flex: 1; min-width: 0; color: inherit; text-decoration: none; }
+.wf-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+/* Simple "Use" page (/use/[gid]) + shared result view */
+.use-page h1 { margin-bottom: 4px; }
+.use-form { max-width: 560px; }
+.use-go { font-size: 16px; padding: 10px 20px; align-self: flex-start; }
+.use-progress { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.use-spinner { width: 16px; height: 16px; border: 2px solid var(--border-color); border-top-color: var(--accent);
+               border-radius: 50%; animation: use-spin .8s linear infinite; }
+@keyframes use-spin { to { transform: rotate(360deg); } }
+.use-result h2 { margin: 0 0 8px; font-size: 16px; }
+.use-footer { margin-top: 24px; }
+.rv { display: flex; flex-direction: column; gap: 8px; }
+.rv-text { margin: 0; line-height: 1.6; white-space: pre-wrap; font-size: 15px; }
+.rv-table-wrap { overflow-x: auto; }
+.rv-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.rv-table th, .rv-table td { border: 1px solid var(--border-color); padding: 6px 8px; text-align: left; vertical-align: top; }
+.rv-table th { background: var(--bg-node); }
+.rv-json { margin: 0; max-height: 260px; overflow: auto; font-size: 12px; background: var(--bg-main);
+           border: 1px solid var(--border-color); border-radius: 8px; padding: 8px; }
+.rv-toggle { align-self: flex-start; font-size: 13px; }
+
+/* Company data page (/data) */
+.cd-h2 { font-size: 16px; margin: 20px 0 8px; }
+.cd-h3 { font-size: 14px; margin: 8px 0 0; }
+.cd-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 10px; margin-bottom: 16px; }
+.cd-source { text-align: left; display: flex; flex-direction: column; gap: 4px; background: var(--bg-panel); color: var(--text-main);
+             border: 1px solid var(--border-color); border-radius: 10px; padding: 12px; cursor: pointer; }
+.cd-source.active, .cd-source:hover { border-color: var(--accent); }
+.cd-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.cd-head h2 { margin: 0; }
+.cd-tables { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.cd-columns { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0 6px 18px; }
+.cd-form { margin-top: 16px; max-width: 640px; }
+.cd-rows { max-width: 200px; }
+.cd-help-toggle { align-self: flex-start; font-size: 13px; }
+
+/* exact database rows under a result */
+.rv-data { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.rv-data-block { border: 1px solid var(--border-color); border-radius: 8px; padding: 8px 10px; }
+.rv-data-block summary { cursor: pointer; margin-bottom: 6px; }
+
+/* data dictionary editor (Company data page) */
+.dd-section { border-top: 1px solid var(--border-color); padding-top: 12px; }
+.dd-section .badge { margin-left: 6px; font-weight: normal; }
+.dd-warnings { margin: 0; padding-left: 18px; color: #fbbf24; font-size: 13px; }
+
+/* editor: canvas kept loaded but hidden in the Copilot-only view; Run button in Copilot answers */
+.ep-canvas[hidden] { display: none; }
+.cp-run { background: #16a34a; margin-right: 6px; }

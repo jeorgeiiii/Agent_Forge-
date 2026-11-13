@@ -239,7 +239,8 @@ class CredentialRead(BaseModel):
 
 
 class OAuthStart(BaseModel):
-    provider: str
+    provider: str = ""
+    connector: str | None = None  # integration id (google_sheets ...): provider + scopes come from its definition
     credential_name: str = Field(min_length=1, max_length=200)
     workspace_id: int | None = None
     scopes: list[str] | None = None

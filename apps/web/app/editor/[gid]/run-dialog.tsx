@@ -8,26 +8,9 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import { guessValue } from "../../run-view";
 
-const INPUT_REF = /\$input\.([A-Za-z_][A-Za-z0-9_]*)/g;
-
-/** Input names used anywhere in the blocks' settings, in first-seen order. */
-export function findInputNames(configs: unknown[]): string[] {
-  const names = new Set<string>();
-  for (const config of configs) {
-    for (const match of JSON.stringify(config ?? {}).matchAll(INPUT_REF)) names.add(match[1]);
-  }
-  return [...names];
-}
-
-/** Text boxes give strings; "42", "true", "[1,2]" are turned into a number / boolean / list. */
-function guessValue(text: string): unknown {
-  const trimmed = text.trim();
-  if (/^(-?\d+(\.\d+)?|true|false|null|\[[\s\S]*\]|\{[\s\S]*\})$/.test(trimmed)) {
-    try { return JSON.parse(trimmed); } catch { /* keep as text */ }
-  }
-  return text;
-}
+export { findInputNames } from "../../run-view";
 
 export default function RunDialog({ inputNames, onRun, onCancel, busy }: {
   inputNames: string[]; onRun: (input: Record<string, unknown>) => void; onCancel: () => void; busy: boolean;
@@ -77,7 +60,7 @@ export default function RunDialog({ inputNames, onRun, onCancel, busy }: {
         )}
         {!jsonMode && inputNames.length > 0 && (
           <>
-            <p className="muted help-small">Your blocks use these inputs (written as <code>{"{{ $input.name }}"}</code> in their settings):</p>
+            <p className="muted help-small">Your blocks use these inputs (written as <code>{"{{ $trigger.name }}"}</code> in their settings):</p>
             {inputNames.map((name, index) => (
               <label key={name} className="field">
                 <span>{name.replace(/_/g, " ")}</span>

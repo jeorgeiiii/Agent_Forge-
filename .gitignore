@@ -45,3 +45,6 @@ infra/production.env
 
 # --- local test login details (never commit) ---
 test-accounts.local.md
+
+# --- editor / Office lock files ---
+~$*

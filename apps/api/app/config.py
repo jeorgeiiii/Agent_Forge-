@@ -41,6 +41,14 @@ class Settings(BaseSettings):
     sso_enabled: bool = False
     # SSO step 1: DNS-over-HTTPS resolver used to check domain-ownership TXT records (JSON API)
     sso_dns_resolver_url: str = "https://cloudflare-dns.com/dns-query"
+
+    # --- Company databases (services/data_sources.py) ---
+    # Databases on private/local addresses (10.x, 192.168.x, localhost) are refused in production unless this
+    # is true (self-hosted AgentForge inside the company network). Development always allows them.
+    data_sources_allow_private: bool = False
+    data_sources_allow_sqlite: bool = False      # sqlite files: tests / local demos only, never production
+    data_source_query_timeout_seconds: int = 15
+    data_source_max_rows: int = 1000             # hard ceiling; each source picks its own limit below this
     invitation_ttl_hours: int = 24 * 7
     mail_backend: str = "console"  # console (log only) | smtp
     mail_from: str = "AgentForge <no-reply@localhost>"

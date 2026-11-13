@@ -42,6 +42,7 @@ export default function SiteHeader() {
       <nav className="main-nav" aria-label="Main">
         <Link href="/" className="brand">AgentForge</Link>
         <Link href="/" className={`nav-link${pathname === "/" ? " active" : ""}`}>Workflows</Link>
+        <Link href="/data" className={`nav-link${pathname === "/data" ? " active" : ""}`}>Company data</Link>
         <Link href="/integrations" className={`nav-link${pathname === "/integrations" ? " active" : ""}`}>Integrations</Link>
         <Link href="/credentials" className={`nav-link${pathname === "/credentials" ? " active" : ""}`}>Saved keys</Link>
         <Link href="/files" className={`nav-link${pathname === "/files" ? " active" : ""}`}>Files</Link>

@@ -16,10 +16,11 @@ import {
 type Props = {
   gid: string;                                  // workflow id (also the chat session id)
   currentCanvasGraph: GraphDefinition | null;   // what is on the canvas right now
-  onApplyGraph: (graph: AgentGraph) => void;    // draw a suggested workflow on the canvas
+  onApplyGraph: (graph: AgentGraph) => void;    // draw a suggested workflow on the canvas (it is saved automatically)
+  onRun: () => void;                             // run the saved workflow; the result panel opens
 };
 
-export default function CopilotChat({ gid, currentCanvasGraph, onApplyGraph }: Props) {
+export default function CopilotChat({ gid, currentCanvasGraph, onApplyGraph, onRun }: Props) {
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -95,7 +96,7 @@ export default function CopilotChat({ gid, currentCanvasGraph, onApplyGraph }: P
                     {loading && isLast && <span className="cp-cursor" />}
                     {!m.content && loading && isLast && <span className="cp-thinking">Thinking...</span>}
                   </div>
-                  {m.graph && <GraphPreview graph={m.graph} onApply={() => onApplyGraph(m.graph!)} />}
+                  {m.graph && <GraphPreview graph={m.graph} onApply={() => onApplyGraph(m.graph!)} onRun={onRun} />}
                 </div>
               </div>
             );
@@ -137,11 +138,12 @@ export default function CopilotChat({ gid, currentCanvasGraph, onApplyGraph }: P
 }
 
 /** Small list of the blocks the Copilot suggested, with a button to draw them again. */
-function GraphPreview({ graph, onApply }: { graph: AgentGraph; onApply: () => void }) {
+function GraphPreview({ graph, onApply, onRun }: { graph: AgentGraph; onApply: () => void; onRun: () => void }) {
   return (
     <div className="cp-preview">
       <div className="cp-preview-head">
         <div className="cp-preview-title">Generated Workflow</div>
+        <button type="button" className="cp-apply cp-run" onClick={onRun} title="Runs the saved workflow and shows the result">▶ Run</button>
         <button type="button" className="cp-apply" onClick={onApply}>⚡ Re-apply to Canvas</button>
       </div>
       <div className="cp-preview-list">

@@ -122,11 +122,27 @@ async def test_tool_errors_go_back_to_the_model_not_the_run(model):
     assert "Unknown tool 'teleport'" in requests[1]["messages"][-1]["content"]
 
 
-async def test_max_steps_stops_a_looping_agent(model):
-    script, _ = model
-    script += [tool_call("get_weather", {"city": "X"}, f"c{i}") for i in range(10)]
+async def test_max_steps_stops_a_looping_agent_but_still_answers(model):
+    script, requests = model
+    script += [tool_call("get_weather", {"city": "X"}, f"c{i}") for i in range(3)] + [final("Best answer so far: sunny.")]
     result, _ = await run(agent_graph(max_steps=3), {"city": "X"})
-    assert result["output"]["stopped_reason"] == "max_steps" and result["output"]["steps"] == 3
+    out = result["output"]
+    assert out["stopped_reason"] == "max_steps_final_answer" and out["steps"] == 3
+    assert out["text"] == "Best answer so far: sunny."  # never an empty answer after a long investigation
+    assert "tools" not in requests[-1] and "used all your tool steps" in requests[-1]["messages"][-1]["content"]
+
+
+async def test_old_tool_results_are_shortened_but_recent_ones_kept():
+    from workflow import KEEP_FULL_TOOL_RESULTS, OLD_TOOL_RESULT_CHARS, compact_tool_results
+
+    big = "x" * 5000
+    messages = [{"role": "user", "content": "q"}] + [{"role": "tool", "tool_call_id": str(i), "content": big}
+                                                       for i in range(5)]
+    compacted = compact_tool_results(messages)
+    lengths = [len(m["content"]) for m in compacted[1:]]
+    assert all(n < OLD_TOOL_RESULT_CHARS + 80 for n in lengths[:-KEEP_FULL_TOOL_RESULTS])
+    assert lengths[-KEEP_FULL_TOOL_RESULTS:] == [5000] * KEEP_FULL_TOOL_RESULTS
+    assert messages[1]["content"] == big  # the agent's own memory is untouched; only the request is smaller
 
 
 async def test_token_budget_stops_the_agent(model):
@@ -217,3 +233,101 @@ async def test_integration_tool_needs_an_action_and_a_key():
         compile_graph(agent_graph(tools=[{"name": "s", "node": {"type": "slack", "config": {}}}]))
     with pytest.raises(GraphValidationError, match="pick the saved GitHub key"):
         compile_graph(agent_graph(tools=[{"name": "g", "node": {"type": "github", "config": {"action": "get_repo"}}}]))
+
+
+# ------------------------------------------------------------------ company database as an agent tool
+
+@pytest.fixture
+def company_api(monkeypatch):
+    """Fake API: the vault (AI key) + the company-database endpoint."""
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_call(method, path, json=None, timeout=10):
+        if path.startswith("/internal/credentials/"):
+            return {"type": "api_key", "data": {"api_key": "sk-test"}}
+        calls.append((path, json))
+        if json.get("action") == "list_tables":
+            return {"database": "Bank", "tables": [{"name": "loans", "columns": ["customer_id", "status"]}]}
+        return {"columns": ["status"], "rows": [{"status": "rejected"}], "row_count": 1, "truncated": False}
+
+    monkeypatch.setattr(activities.api_client, "call", fake_call)
+    return calls
+
+
+async def test_agent_reads_the_company_database_with_its_own_sql(model, company_api):
+    script, requests = model
+    tables = {"name": "tables", "node": {"type": "database", "config": {"data_source_id": 7, "action": "list_tables"}}}
+    query = {"name": "query", "node": {"type": "database", "config": {"data_source_id": 7, "action": "query"}}}
+    script += [tool_call("tables", {}, "c1"),
+               tool_call("query", {"sql": "SELECT status FROM loans WHERE customer_id = 1",
+                                   "data_source_id": 99, "action": "list_tables"}, "c2"),  # tries to switch: ignored
+               final("Customer 1's loan was rejected.")]
+    result, _ = await run(agent_graph(tools=[tables, query], prompt="Why was customer 1's loan rejected?"), {})
+
+    defs = {t["function"]["name"]: t["function"] for t in requests[0]["tools"]}
+    assert defs["tables"]["description"].startswith("Company database: list the tables")
+    assert defs["query"]["parameters"]["required"] == ["sql"]
+    (first_path, first_body), (second_path, second_body) = company_api
+    assert first_path.startswith("/internal/data-sources/7/run?workflow_id=") and first_body == {"action": "list_tables"}
+    assert second_path.startswith("/internal/data-sources/7/run")  # still database 7
+    assert second_body == {"action": "query", "sql": "SELECT status FROM loans WHERE customer_id = 1"}
+    assert "rejected" in requests[2]["messages"][-1]["content"]
+    assert result["output"]["text"] == "Customer 1's loan was rejected."
+
+
+async def test_database_tool_needs_a_database_and_action():
+    with pytest.raises(GraphValidationError, match="pick the company database"):
+        compile_graph(agent_graph(tools=[{"name": "q", "node": {"type": "database", "config": {"action": "query"}}}]))
+
+
+async def test_requests_are_fitted_to_the_ai_plan_limit():
+    from workflow import _request_tokens, fit_request
+
+    messages = [{"role": "system", "content": "rules " * 300}] + [
+        {"role": "tool", "tool_call_id": str(i), "content": "row," * 3000} for i in range(6)]
+    tools = [{"type": "function", "function": {"name": "q", "parameters": {}}}]
+    request, max_tokens = fit_request(messages, tools, 8000, 4000)
+    assert _request_tokens(request, tools) + max_tokens <= 8000  # input + reserved answer fit the plan
+    assert 256 <= max_tokens <= 4000
+    unlimited, wanted = fit_request(messages, tools, None, 4000)
+    assert wanted == 4000 and len(unlimited) == len(messages)
+
+
+async def test_data_dictionary_result_is_never_shortened():
+    from workflow import compact_tool_results
+
+    big = "d" * 5000
+    messages = [{"role": "tool", "tool_call_id": "dict", "content": big}] + [
+        {"role": "tool", "tool_call_id": str(i), "content": "x" * 5000} for i in range(6)]
+    compacted = compact_tool_results(messages, keep_full=1, old_chars=100, pinned={"dict"})
+    assert compacted[0]["content"] == big                     # the company's data dictionary stays in full
+    assert len(compacted[1]["content"]) < 200                  # other old results are shortened
+
+
+async def test_answer_cut_off_by_the_token_limit_gets_a_second_chance(monkeypatch):
+    """Reasoning models can spend all of max_tokens 'thinking' and return empty text (finish_reason=length)."""
+    import activities
+
+    replies = [{"role": "assistant", "content": ""}, {"role": "assistant", "content": "Here is the full answer."}]
+    finishes = ["length", "stop"]
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        return httpx.Response(200, json={"model": body["model"], "choices": [
+            {"message": replies.pop(0), "finish_reason": finishes.pop(0)}], "usage": {"prompt_tokens": 10, "completion_tokens": 5}})
+
+    async def fake_credential(method, path, json=None, timeout=10):
+        return {"type": "api_key", "data": {"api_key": "sk-test"}}
+
+    async def public_ok(url):
+        return None
+
+    monkeypatch.setattr(activities, "_llm_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(activities.api_client, "call", fake_credential)
+    monkeypatch.setattr(activities, "validate_public_http_url", public_ok)
+    result, _ = await run(agent_graph(), {"city": "X"})
+    assert result["output"]["text"] == "Here is the full answer."
+    assert result["output"]["stopped_reason"] == "final_after_cut_off"
+    assert "tools" not in requests[1]  # the retry asks for the answer only

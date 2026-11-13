@@ -2,6 +2,20 @@ import { NextResponse } from "next/server";
 import { saveChatMessage } from "@/lib/api";
 import { checkRateLimit } from "@/lib/rate-limiter";
 import { buildSystemPrompt } from "./copilot-knowledge";
+import { callProvider, friendlyProviderError } from "./provider";
+import { loadDataContext, testDatabaseNodes } from "./data-context";
+
+/** The model's reply -> a graph object, if it contains one (plain JSON or a ```json block). */
+function parseGraphText(content: string): unknown {
+  try {
+    const trimmed = content.trim();
+    return JSON.parse(trimmed.startsWith("```") ? trimmed.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "") : trimmed);
+  } catch {
+    const match = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    if (!match) return null;
+    try { return JSON.parse(match[1].trim()); } catch { return null; }
+  }
+}
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -28,9 +42,9 @@ function getChatHistory(value: unknown): ChatMessage[] | null {
   if (!Array.isArray(value)) return null;
 
   return value
-    .slice(-20)
+    .slice(-8) // recent turns only: everything is resent with each message (provider tokens-per-minute limits)
     .filter(isChatMessage)
-    .map(({ role, content }) => ({ role, content }));
+    .map(({ role, content }) => ({ role, content: content.length > 1500 ? content.slice(0, 1500) + " …" : content }));
 }
 
 function normalizeAgentGraph(value: unknown): {
@@ -189,6 +203,38 @@ export async function POST(request: Request) {
         // ignore serialization error
       }
     }
+    // real tables/columns of the workspace's connected databases (only the ones that match the question)
+    const cookie = request.headers.get("cookie") ?? "";
+    const dataContext = await loadDataContext(cookie, sessionId, prompt, context?.currentGraph);
+    if (dataContext) systemInstruction += `\n\n${dataContext}`;
+
+    /** Test-run the Copilot's database queries; if one fails, ask the model once to fix it. */
+    async function checkGraph(rawContent: string, graph: ReturnType<typeof normalizeAgentGraph>) {
+      if (!graph) return graph;
+      let problems = await testDatabaseNodes(cookie, graph);
+      if (!problems.length) {
+        return graph.nodes.some((n) => n.type === "database")
+          ? { ...graph, explanation: `${graph.explanation}\n\n✅ Database query tested - it runs.` } : graph;
+      }
+      const repair = await callProvider(apiKey!, {
+        ...requestPayload, stream: false,
+        messages: [...requestPayload.messages, { role: "assistant", content: rawContent },
+          { role: "user", content: `These Company database queries failed when tested on the real database:\n- ${problems.join("\n- ")}\n` +
+            "Fix them using ONLY the real tables and columns listed in COMPANY DATABASES, and return the complete JSON again." }],
+      }).catch(() => null);
+      const repairBody = repair?.ok
+        ? ((await repair.json().catch(() => null)) as { choices?: { message?: { content?: string } }[] } | null) : null;
+      const repairedText = repairBody?.choices?.[0]?.message?.content ?? "";
+      const repaired = repairedText ? normalizeAgentGraph(parseGraphText(repairedText)) : null;
+      if (repaired) {
+        problems = await testDatabaseNodes(cookie, repaired);
+        if (!problems.length) {
+          return { ...repaired, explanation: `${repaired.explanation}\n\n✅ Database query tested (fixed once automatically) - it runs.` };
+        }
+        graph = repaired;
+      }
+      return { ...graph, explanation: `${graph.explanation}\n\n⚠ The database query still fails: ${problems.join("; ")}. Tell me what you want and I will fix it.` };
+    }
 
     const requestPayload = {
       model,
@@ -198,30 +244,16 @@ export async function POST(request: Request) {
         { role: "user", content: prompt },
       ],
       temperature: 0.3,
+      // cap the answer: providers count the requested maximum against the per-minute token allowance
+      max_tokens: 2000,
     };
 
     if (isStreaming) {
-      const groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          ...requestPayload,
-          stream: true,
-        }),
-        signal: AbortSignal.timeout(45000),
-      });
+      const groqResponse = await callProvider(apiKey, { ...requestPayload, stream: true });
 
       if (!groqResponse.ok) {
-        const errorResult = await groqResponse.json().catch(() => null);
-        const providerMessage = (errorResult as { error?: { message?: string } })?.error?.message;
-        console.error("Groq chat streaming request failed:", groqResponse.status, providerMessage);
-        return NextResponse.json(
-          { error: providerMessage || `Groq returned HTTP ${groqResponse.status}.` },
-          { status: 502 }
-        );
+        const { error, status } = await friendlyProviderError(groqResponse, model);
+        return NextResponse.json({ error }, { status });
       }
 
       const encoder = new TextEncoder();
@@ -231,7 +263,7 @@ export async function POST(request: Request) {
         async start(controller) {
           if (!groqResponse.body) {
             controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ type: "error", error: "No response body from Groq" })}\n\n`)
+              encoder.encode(`data: ${JSON.stringify({ type: "error", error: "The AI assistant did not answer. Please try again." })}\n\n`)
             );
             controller.close();
             return;
@@ -309,7 +341,7 @@ export async function POST(request: Request) {
                 }
               }
             }
-            const normalizedGraph = graph ? normalizeAgentGraph(graph) : null;
+            const normalizedGraph = await checkGraph(accumulatedContent, graph ? normalizeAgentGraph(graph) : null);
 
             // Persist assistant message to PostgreSQL chat_messages table
             if (typeof sessionId === "string" && sessionId) {
@@ -333,7 +365,8 @@ export async function POST(request: Request) {
             controller.enqueue(encoder.encode("data: [DONE]\n\n"));
             controller.close();
           } catch (err) {
-            const errMsg = err instanceof Error ? err.message : "Error reading Groq stream";
+            console.error("AI answer stream failed:", err);
+            const errMsg = "The answer was cut off. Please send your message again.";
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ type: "error", error: errMsg })}\n\n`)
             );
@@ -354,36 +387,12 @@ export async function POST(request: Request) {
     }
 
     // Non-streaming fallback
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(requestPayload),
-      signal: AbortSignal.timeout(45000),
-    });
-
-    const result: unknown = await response.json().catch(() => null);
-
+    const response = await callProvider(apiKey, requestPayload);
     if (!response.ok) {
-      const errorBody = result as { error?: { message?: string } } | null;
-      const providerMessage = errorBody?.error?.message;
-      console.error("Groq chat request failed:", response.status, providerMessage);
-      const modelUnavailable =
-        typeof providerMessage === "string" &&
-        providerMessage.toLowerCase().includes("model") &&
-        (providerMessage.toLowerCase().includes("does not exist") ||
-          providerMessage.toLowerCase().includes("do not have access"));
-      return NextResponse.json(
-        {
-          error: modelUnavailable
-            ? `Groq model "${model}" is unavailable for this API key. Unset GROQ_MODEL or set it to an active model enabled for your Groq account.`
-            : providerMessage || `Groq returned HTTP ${response.status}.`,
-        },
-        { status: 502 },
-      );
+      const { error, status } = await friendlyProviderError(response, model);
+      return NextResponse.json({ error }, { status });
     }
+    const result: unknown = await response.json().catch(() => null);
 
     const choice = (result as {
       choices?: { message?: { content?: unknown } }[];
@@ -411,7 +420,7 @@ export async function POST(request: Request) {
         }
       }
     }
-    const normalizedGraph = graph ? normalizeAgentGraph(graph) : null;
+    const normalizedGraph = await checkGraph(content, graph ? normalizeAgentGraph(graph) : null);
     const finalContent = normalizedGraph ? JSON.stringify(normalizedGraph) : content;
 
     // Persist assistant message to PostgreSQL chat_messages table

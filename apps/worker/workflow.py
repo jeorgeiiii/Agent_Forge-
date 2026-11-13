@@ -357,6 +357,7 @@ class AgentLoop:
         self.on_step = on_step
         self.usage = {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}
         self.trace: list[dict[str, Any]] = []
+        self.pinned_tool_calls: set[str] = set()  # data-dictionary results: never shortened
         self.context = build_expression_context(
             run_input=run_input, node_outputs=node_outputs, labels=labels, current_input=current_input,
             run_meta=meta, now=workflow.now().isoformat(),
@@ -500,23 +501,27 @@ class AgentLoop:
         token_budget = config.get("max_total_tokens")
         text, stopped = "", "max_steps"
 
+        budget = config.get("context_budget_tokens")
         for step in range(1, max_steps + 1):
             asked_at = workflow.now()
+            request_messages, max_tokens = fit_request(messages, tool_defs, budget, config.get("max_tokens"),
+                                                       self.pinned_tool_calls)
             reply = await workflow.execute_activity(
                 llm_chat,
                 {
                     "credential_id": config.get("credential_id"),
                     "base_url": config.get("base_url"),
                     "model": config["model"],
-                    "messages": messages,
+                    # older tool results are shortened so requests stay under provider size / per-minute limits
+                    "messages": request_messages,
                     "tools": tool_defs,
                     "temperature": config.get("temperature"),
-                    "max_tokens": config.get("max_tokens"),
+                    "max_tokens": max_tokens,
                     "json_output": config.get("json_output") and not tool_defs,
                     "workflow_id": self.run_workflow_id or self.meta.get("workflow_id", ""),
                 },
                 start_to_close_timeout=timedelta(seconds=90),
-                retry_policy=RetryPolicy(maximum_attempts=3, initial_interval=timedelta(seconds=2), backoff_coefficient=2.0),
+                retry_policy=LLM_RETRY,
             )
             self._charge(reply["usage"])
             message = reply["message"]
@@ -536,7 +541,8 @@ class AgentLoop:
                 await self.on_flush()
             self.trace.append({"step": step, "tool_calls": [c.get("function", {}).get("name") for c in calls]})
             if not calls:
-                stopped = "final"
+                # an empty answer cut off by the token limit (reasoning models think inside max_tokens) is not final
+                stopped = "final" if text or reply.get("finish_reason") != "length" else "answer_cut_off"
                 break
             if token_budget and self.usage["input_tokens"] + self.usage["output_tokens"] >= int(token_budget):
                 stopped = "token_budget"
@@ -545,6 +551,29 @@ class AgentLoop:
             messages.extend(results)
             if self.on_step:
                 await self.on_step()
+
+        if stopped in ("max_steps", "answer_cut_off") and not text:
+            # out of steps mid-investigation: one last call WITHOUT tools so the user still gets an answer
+            messages.append({"role": "user", "content": "You have used all your tool steps. Do not call tools. "
+                             "Give your final answer now, using only what you found so far, and say what is unchecked."})
+            reply = await workflow.execute_activity(
+                llm_chat,
+                {"credential_id": config.get("credential_id"), "base_url": config.get("base_url"),
+                 "model": config["model"],
+                 # the final answer gets real room: shorten older results harder until ~2000 tokens are free
+                 "messages": fit_request(messages, [], budget, config.get("max_tokens"), self.pinned_tool_calls, 2000)[0],
+                 "tools": [], "temperature": config.get("temperature"),
+                 "max_tokens": fit_request(messages, [], budget, config.get("max_tokens"), self.pinned_tool_calls, 2000)[1],
+                 "workflow_id": self.run_workflow_id or self.meta.get("workflow_id", "")},
+                start_to_close_timeout=timedelta(seconds=90), retry_policy=LLM_RETRY,
+            )
+            self._charge(reply["usage"])
+            text = reply["message"].get("content") or ""
+            self._event("llm.call", step=len(self.trace) + 1, depth=self.depth, model=reply.get("model") or config["model"],
+                        input_tokens=reply["usage"].get("input_tokens", 0),
+                        output_tokens=reply["usage"].get("output_tokens", 0), finish_reason="final_after_max_steps",
+                        tool_calls=[], response_preview=_preview(text))
+            stopped = "max_steps_final_answer" if stopped == "max_steps" else "final_after_cut_off"
 
         output: dict[str, Any] = {"text": text, "stopped_reason": stopped, "steps": len(self.trace), "usage": self.usage}
         if memory_key_ and text:
@@ -582,6 +611,8 @@ class AgentLoop:
                 raise ValueError("Tool arguments must be a JSON object.")
             node_type = tool["node"]["type"]
             node_config = tool["node"].get("config") or {}
+            if node_type == "database" and node_config.get("action") == "list_tables":
+                self.pinned_tool_calls.add(call_id)   # the company's data dictionary stays in full
             if is_connector(node_type):
                 # integration tool: re-check the safety rules, then let the AI fill only the free fields
                 connector = get_connector(node_type)
@@ -589,6 +620,10 @@ class AgentLoop:
                 if problems:
                     raise ValueError(" ".join(problems))
                 node_config = merge_tool_arguments(connector, node_config, arguments)
+            elif node_type == "database":
+                # the AI fills only the SQL / table; the database and action stay as configured
+                node_config = {**node_config, **{k: arguments[k] for k in ("sql", "table")
+                                                 if k in arguments and not node_config.get(k)}}
             if node_type == "agent":
                 content = await self._run_sub_agent(name, call_id, node_config, arguments)
             else:
@@ -614,7 +649,10 @@ class AgentLoop:
                     kind=(tool or {}).get("node", {}).get("type"),
                     duration_ms=round((workflow.now() - called_at).total_seconds() * 1000),
                     result_preview=_preview(content))
-        return {"role": "tool", "tool_call_id": call_id, "content": content[:MAX_TOOL_RESULT_CHARS]}
+        limit = int(self.config.get("max_tool_result_chars") or MAX_TOOL_RESULT_CHARS)
+        if len(content) > limit:
+            content = content[:limit] + f" …(cut at {limit} characters - use a narrower query: WHERE, GROUP BY, LIMIT)"
+        return {"role": "tool", "tool_call_id": call_id, "content": content}
 
     async def _run_sub_agent(self, name, call_id, config, arguments) -> str:
         """Delegate to another agent as a child workflow, one level deeper."""
@@ -659,13 +697,78 @@ class AgentLoop:
         return json.dumps(answer, default=str)
 
 
+# AI provider rate limits (429) and outages: be patient - 5 s, 10 s, 20 s, 40 s, 60 s (free plans need this)
+LLM_RETRY = RetryPolicy(maximum_attempts=6, initial_interval=timedelta(seconds=5), backoff_coefficient=2.0,
+                        maximum_interval=timedelta(seconds=60))
+KEEP_FULL_TOOL_RESULTS = 3      # the most recent tool results are sent in full
+OLD_TOOL_RESULT_CHARS = 600     # older ones are shortened to this
+
+
+def compact_tool_results(messages: list[dict[str, Any]], keep_full: int = KEEP_FULL_TOOL_RESULTS,
+                         old_chars: int = OLD_TOOL_RESULT_CHARS, pinned: set[str] | None = None) -> list[dict[str, Any]]:
+    """A copy of the conversation where all but the last few tool results are shortened.
+
+    Every agent step resends the whole conversation; without this, a data-heavy task (finance queries) grows
+    past the provider's request size / tokens-per-minute limit and every further step is refused.
+    `pinned` tool results (the company's data dictionary) are never shortened: without them the agent forgets where
+    things are and wastes steps listing the tables again.
+    """
+    pinned = pinned or set()
+    tool_positions = [i for i, m in enumerate(messages) if m.get("role") == "tool" and m.get("tool_call_id") not in pinned]
+    shorten = set(tool_positions[:-keep_full] if keep_full else tool_positions)
+    compacted = []
+    for index, message in enumerate(messages):
+        content = message.get("content")
+        if index in shorten and isinstance(content, str) and len(content) > old_chars:
+            message = {**message, "content": content[:old_chars] + " …(older result shortened; query again if needed)"}
+        compacted.append(message)
+    return compacted
+
+
+def _request_tokens(messages: list[dict[str, Any]], tool_defs: list[dict[str, Any]]) -> int:
+    """Conservative size estimate (SQL/JSON packs ~3 characters per token)."""
+    return int(len(json.dumps(messages, default=str)) / 3.2 + len(json.dumps(tool_defs)) / 3.2) + 50
+
+
+def fit_request(messages: list[dict[str, Any]], tool_defs: list[dict[str, Any]], budget: int | None,
+                wanted_max_tokens: int | None, pinned: set[str] | None = None,
+                min_room: int = 800) -> tuple[list[dict[str, Any]], int | None]:
+    """Make one AI request fit the provider plan's per-request limit (context_budget_tokens on the agent).
+
+    Providers such as Groq's free plan count input + the reserved answer (max_tokens) and reject anything over the
+    limit (HTTP 413). We shorten older tool results step by step, then reserve only the space that is left.
+    """
+    if not budget:
+        return compact_tool_results(messages, pinned=pinned), wanted_max_tokens
+    request, room = messages, 0
+    for keep_full, old_chars in ((KEEP_FULL_TOOL_RESULTS, OLD_TOOL_RESULT_CHARS), (2, 300), (1, 200), (0, 120)):
+        request = compact_tool_results(messages, keep_full, old_chars, pinned)
+        room = budget - _request_tokens(request, tool_defs) - 300  # safety margin
+        if room >= min_room:
+            break
+    return request, max(256, min(wanted_max_tokens or room, room))
+
+
 def _preview(value: Any, limit: int = 500) -> str:
     text = value if isinstance(value, str) else json.dumps(value, default=str)
     return text if len(text) <= limit else text[:limit] + "..."
 
 
+DATABASE_TOOL_HELP = {
+    "list_tables": ("Company database: list the tables and their columns. Call this first so you know the exact "
+                    "table and column names.", {}),
+    "describe_table": ("Company database: the columns of one table.",
+                       {"table": {"type": "string", "description": "Table name from list_tables."}}),
+    "query": ("Company database: run ONE read-only SQL SELECT and get the rows back. Use exact table/column names "
+              "from list_tables, add LIMIT, and never try to change data (it is refused).",
+              {"sql": {"type": "string", "description": "A single SELECT statement."}}),
+}
+
+
 def _default_tool_description(tool: dict[str, Any]) -> str:
     node = tool.get("node") or {}
+    if node.get("type") == "database":
+        return DATABASE_TOOL_HELP.get((node.get("config") or {}).get("action", ""), ("Company database", {}))[0]
     if is_connector(str(node.get("type", ""))):
         try:
             return tool_description(get_connector(node["type"]), node.get("config") or {})
@@ -676,6 +779,11 @@ def _default_tool_description(tool: dict[str, Any]) -> str:
 
 def _default_tool_parameters(tool: dict[str, Any]) -> dict[str, Any]:
     node = tool.get("node") or {}
+    if node.get("type") == "database":
+        config = node.get("config") or {}
+        props = {k: v for k, v in DATABASE_TOOL_HELP.get(config.get("action", ""), ("", {}))[1].items()
+                 if not config.get(k)}
+        return {"type": "object", "properties": props, "required": list(props)}
     if is_connector(str(node.get("type", ""))):
         try:  # the action's fields you did not fix yourself
             return tool_parameters(get_connector(node["type"]), node.get("config") or {})

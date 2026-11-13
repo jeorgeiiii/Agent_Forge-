@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { CredentialSummary, JsonSchema } from "@/lib/api";
 import { FIELD_HELP } from "@/lib/help";
+import DataSourceSelect, { DatabaseToolsButton } from "./data-source-select";
 import IntegrationToolPicker from "./integration-tool-picker";
 
 type Config = Record<string, unknown>;
@@ -84,6 +85,15 @@ function Field({
       </div>
     );
   }
+  if (name === "data_source_id") {
+    return (
+      <div className="nf-field">
+        {label}
+        <DataSourceSelect id={id} value={value} onChange={onChange} />
+        {help}
+      </div>
+    );
+  }
   if (schema.enum) {
     return (
       <div className="nf-field">
@@ -144,7 +154,10 @@ function Field({
         <JsonField id={id} value={value} onChange={onChange} rows={name === "tools" ? 8 : 4} />
         {help}
         {name === "tools" && (
-          <IntegrationToolPicker tools={value} onAdd={onChange} credentials={credentials} allowWrites={allowWrites} />
+          <>
+            <DatabaseToolsButton tools={value} onAdd={onChange} />
+            <IntegrationToolPicker tools={value} onAdd={onChange} credentials={credentials} allowWrites={allowWrites} />
+          </>
         )}
       </div>
     );

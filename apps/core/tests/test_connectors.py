@@ -10,7 +10,8 @@ from agentforge_core.registry import get_node_type, validate_node_config
 
 
 def _sample(f: ConnectorField):
-    return {"integer": 3, "number": 1.5, "boolean": True, "object": {"k": "v"}, "array": ["a"]}.get(f.type, "x")
+    return {"integer": 3, "number": 1.5, "boolean": True, "object": {"k": "v"}, "array": ["a"],
+            "rows": [["a", "b"]]}.get(f.type, "x")
 
 
 @pytest.mark.parametrize("connector", CONNECTORS, ids=lambda c: c.id)
@@ -116,3 +117,15 @@ def test_catalog_has_no_money_moving_actions():
         assert all(a.method == "GET" for a in get_connector(connector_id).actions)
     banned = ("charge", "refund", "payout", "transfer", "trade", "order")
     assert not [a.id for c in CONNECTORS for a in c.actions if any(b in a.id for b in banned)]
+
+
+def test_google_connectors_use_sign_in_and_small_scopes():
+    sheets, drive = get_connector("google_sheets"), get_connector("google_drive")
+    assert sheets.oauth_provider == drive.oauth_provider == "google"
+    assert sheets.oauth_scopes == ("https://www.googleapis.com/auth/spreadsheets",)
+    assert not any(s.endswith("/auth/drive") for s in drive.oauth_scopes)  # never full Drive access
+    request = build_request(sheets, {"action": "append_rows", "credential_id": 1, "spreadsheet_id": "abc",
+                                     "range": "Sheet1!A1", "rows": [["Ada", "{{ $input.x }}"]]})
+    assert request["url"] == "https://sheets.googleapis.com/v4/spreadsheets/abc/values/Sheet1%21A1:append"
+    assert request["params"]["valueInputOption"] == "USER_ENTERED"
+    assert request["json"] == {"values": [["Ada", "{{ $input.x }}"]]}

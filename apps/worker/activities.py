@@ -267,6 +267,36 @@ async def _connector(ctx: NodeContext) -> dict[str, Any]:
     return {"main": {"ok": True, "status_code": response.status_code, "data": read_result(connector, action, payload)}}
 
 
+async def _database(ctx: NodeContext) -> dict[str, Any]:
+    """'Company database' block / agent tool. The query runs inside the API (which holds the encrypted address
+    and checks this run's workspace); the worker only sends the request and gets rows back."""
+    config = {name: ctx.param(name) for name in ctx.raw_config}
+    source_id = config.get("data_source_id")
+    if not source_id:
+        raise ValueError("Pick a company database for this block.")
+    body = {k: config.get(k) for k in ("action", "sql", "params", "table", "max_rows", "tables", "concepts")
+            if config.get(k) is not None}
+    query = f"?workflow_id={quote(ctx.workflow_id, safe='')}"
+    try:
+        result = await api_client.call("POST", f"/internal/data-sources/{int(source_id)}/run{query}", json=body,
+                                       timeout=60)
+    except api_client.InternalApiError as error:
+        if error.status_code and 400 <= error.status_code < 500:  # the database's/validation message, not retryable
+            raise ValueError(_api_detail(str(error))) from error
+        raise
+    return {"main": result}
+
+
+def _api_detail(message: str) -> str:
+    """'POST /x failed with 422: {"detail":"..."}' -> just the detail sentence."""
+    _, _, tail = message.partition(": ")
+    try:
+        detail = json.loads(tail).get("detail")
+        return detail if isinstance(detail, str) else message
+    except (ValueError, AttributeError):
+        return message
+
+
 DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1"
 LLM_TIMEOUT_SECONDS = 60
 
@@ -383,6 +413,7 @@ register_node_executor("switch", _switch)
 register_node_executor("merge", _merge)
 register_node_executor("http", _http)
 register_node_executor("llm", _llm)
+register_node_executor("database", _database)
 for _connector_spec in list_connectors():
     register_node_executor(_connector_spec.id, _connector)
 

@@ -1,0 +1,27 @@
+{
+  "today": "2026-11-12",
+  "currency": "INR",
+  "notes": "Brightline Logistics Pvt Ltd, Bengaluru. Fiscal year Apr-Mar. Company limits, fees and deadlines are in the table mapped as 'policy'. In the books (ledger lines), a bank's ledger account is debited when money comes in and credited when money goes out.",
+  "policies": {},
+  "concepts": {
+    "customer":                {"table": "customers", "columns": {"id": "customer_id", "name": "name", "state": "state", "tax_id": "gstin"}},
+    "invoice":                 {"table": "invoices", "columns": {"id": "invoice_id", "customer": "customer_id", "date": "issued_on", "due_date": "due_on", "amount": "amount_inr", "tax": "cgst_inr + sgst_inr + igst_inr", "status": "status"}},
+    "invoice_balance":         {"table": "v_invoice_balances", "columns": {"invoice": "invoice_id", "amount": "amount_inr", "paid": "applied_inr", "open_amount": "amount_inr - applied_inr - credited_inr"}, "notes": "credited_inr = credit notes against the invoice"},
+    "customer_payment":        {"table": "receipts", "columns": {"id": "receipt_id", "date": "received_on", "amount": "amount_inr", "customer": "customer_id", "payer_name": "payer_name", "reference": "remarks", "method": "method", "bank_account": "bank_account_id"}, "notes": "remarks = free text typed by the payer; utr_reference = bank reference; tds_deducted_inr = tax deducted at source by the customer; customer_id may be NULL for payers that are not customers"},
+    "payment_allocation":      {"table": "receipt_allocations", "columns": {"payment": "receipt_id", "invoice": "invoice_id", "amount_applied": "amount_applied_inr"}, "notes": "tds_applied_inr = TDS counted against the invoice"},
+    "bank_account":            {"table": "bank_accounts", "columns": {"id": "bank_account_id", "bank": "bank_name", "ledger_account": "gl_account", "min_balance": "min_balance_alert_inr", "overdraft_limit": "od_limit_inr"}},
+    "bank_statement_line":     {"table": "bank_transactions", "columns": {"id": "txn_id", "bank_account": "bank_account_id", "date": "txn_date", "description": "description", "reference": "reference", "debit": "debit_inr", "credit": "credit_inr", "balance": "balance_inr"}},
+    "gateway_settlement":      {"table": "gateway_settlements", "columns": {"id": "settlement_id", "date": "settlement_date", "gross": "gross_amount_inr", "fee": "fee_inr", "tax_on_fee": "gst_on_fee_inr", "net": "net_amount_inr", "bank_reference": "settlement_utr"}},
+    "gateway_settlement_item": {"table": "gateway_settlement_items", "columns": {"settlement": "settlement_id", "payment": "receipt_id", "amount": "amount_inr"}},
+    "cash_collection":         {"table": "cod_collections", "columns": {"id": "collection_id", "collector": "driver_id", "date": "collected_on", "amount": "amount_inr", "invoice": "invoice_id", "deposit": "deposit_id"}, "notes": "cash on delivery collected by drivers; deposit_id NULL = not deposited yet"},
+    "cash_deposit":            {"table": "cod_deposits", "columns": {"id": "deposit_id", "collector": "driver_id", "date": "deposited_on", "amount": "amount_inr", "bank_account": "bank_account_id"}},
+    "loan":                    {"table": "loans", "columns": {"id": "loan_id", "lender": "lender", "principal": "principal_inr", "rate": "interest_rate_pct", "emi": "emi_inr", "covenants": "covenant_min_dscr, covenant_min_current_ratio, covenant_max_debt_equity"}},
+    "loan_instalment":         {"table": "loan_schedule", "columns": {"loan": "loan_id", "number": "installment_no", "due_date": "due_date", "amount": "emi_inr", "paid_on": "paid_on", "penalty": "penal_charges_inr"}},
+    "ledger_entry":            {"table": "journal_entries", "columns": {"id": "je_id", "date": "je_date", "period": "period", "type": "je_type", "narration": "narration", "created_by": "created_by", "approved_by": "approved_by", "has_document": "has_attachment"}},
+    "ledger_line":             {"table": "journal_lines", "columns": {"entry": "je_id", "account": "account_code", "debit": "debit", "credit": "credit", "party": "party_id"}},
+    "ledger_account":          {"table": "chart_of_accounts", "columns": {"code": "account_code", "name": "account_name", "type": "account_type"}},
+    "vendor":                  {"table": "vendors", "columns": {"id": "vendor_id", "name": "name", "tax_id": "gstin", "bank_account": "bank_account_no", "is_msme": "msme_registered"}},
+    "vendor_payment":          {"table": "vendor_payments", "columns": {"id": "payment_id", "vendor": "vendor_id", "vendor_invoice": "vendor_invoice_id", "date": "paid_on", "amount": "amount_paid_inr", "tds": "tds_deducted_inr", "to_account": "paid_to_account_no", "approved_by": "approved_by"}, "notes": "mode = NEFT/RTGS/cheque; a cheque may not have reached the bank yet"},
+    "policy":                  {"table": "finance_policies", "columns": {"name": "policy_key", "value": "policy_value"}}
+  }
+}
